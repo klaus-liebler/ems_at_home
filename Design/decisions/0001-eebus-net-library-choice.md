@@ -106,18 +106,41 @@ leere Entities/Use-Cases) tatsächlich gegen die echte Wallbox getestet:
    `"connected": true` — vermutlich optimistisch gesetzt, sobald das Pairing angenommen wurde,
    nicht erst nach erfolgreichem SHIP-Handshake.
 
-**Hypothese** (noch nicht verifiziert): `EEBUSManager.TryConnectAsync` hängt beim ausgehenden
-`ClientWebSocket` vermutlich kein eigenes Client-Zertifikat an (`ClientWebSocketOptions.ClientCertificates`).
-SHIP verlangt beidseitige TLS-Client-Zertifikats-Authentifizierung (mutual TLS) — die
-`SHIPListener`-Serverseite ist zwar mit `ClientCertificateRequired = true` konfiguriert, die
-Client-Rolle beim ausgehenden Verbindungsaufbau wurde in der bisherigen Quellcode-Analyse nicht
-geprüft. Das wäre, da die Bibliothek MIT-lizenziert ist, mit einem lokalen Patch behebbar.
+**Erste Hypothese widerlegt**: Direkt am geklonten Quellcode geprüft — `TryConnectAsync` hängt das
+Client-Zertifikat korrekt an (`wsClient.Options.ClientCertificates.Add(_cert)`). Das war nicht die
+Ursache.
+
+**Tatsächliche Ursache (verifiziert am Quellcode, `EEBUSManager.cs:808-891`)**: `SHIPListener.cs`
+pinnt für unsere **Server**-Rolle (eingehende Verbindungen) explizit
+`SslProtocols.Tls12`/`EnabledSslProtocols = SslProtocols.Tls12`. Für unsere **Client**-Rolle
+(`TryConnectAsync`, ausgehende Verbindung zur Wallbox) passiert das nicht — der Code ruft schlicht
+`wsClient.ConnectAsync(uri, _cts.Token)` auf, den einfachen Zwei-Parameter-Overload ohne eigenen
+`HttpMessageInvoker`. Per Reflection geprüft: `System.Net.WebSockets.ClientWebSocketOptions` besitzt
+in .NET 10 **gar keine** `SslProtocols`-Eigenschaft mehr (anders als in älteren .NET-Framework-APIs) —
+die TLS-Version/Cipher-Suite-Aushandlung läuft komplett über OS-Defaults (Windows Schannel), sofern
+nicht ein eigener `SocketsHttpHandler` mit gesetzten `SslClientAuthenticationOptions`
+(`EnabledSslProtocols`, ggf. `CipherSuitesPolicy`) über den *anderen* `ConnectAsync`-Overload
+(`ConnectAsync(uri, HttpMessageInvoker, CancellationToken)`) durchgereicht wird. Das erklärt exakt
+den beobachteten TLS-`HandshakeFailure`: Die eingebettete Ghost-Plattform der Wallbox verlangt
+vermutlich strikt die SHIP-Spec-Cipher-Suite `TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256` auf TLS 1.2 —
+Windows' Standard-Verhandlung für ausgehende Verbindungen bietet diese Kombination offenbar nicht
+zuverlässig an.
+
+**Konkreter Fix-Ansatz** (noch nicht umgesetzt): `TryConnectAsync` so patchen, dass es
+`wsClient.ConnectAsync(uri, invoker, cancellationToken)` mit einem eigenen
+`HttpMessageInvoker(new SocketsHttpHandler { SslOptions = new SslClientAuthenticationOptions {
+EnabledSslProtocols = SslProtocols.Tls12, CipherSuitesPolicy = new CipherSuitesPolicy([...]) } })`
+verwendet. Das erfordert, die Bibliothek als lokalen Quellcode-Fork einzubinden (PackageReference
+kann keine einzelne Methode patchen) — ein spürbarer Scope-Sprung (ganzer Quellbaum vendored statt
+NuGet-Referenz), noch nicht umgesetzt. Offenes Risiko: Falls Windows die geforderte Cipher-Suite auf
+OS-Ebene (Schannel-Registry/Gruppenrichtlinie) deaktiviert hat, hilft auch dieser Code-Fix nicht ohne
+zusätzliche OS-Konfiguration.
 
 **Status**: Bidirektionale SHIP-Discovery und -Pairing sind bewiesen funktionsfähig — der
 grundsätzliche Ansatz (eigener CEM-Server, CA-signiertes Zertifikat, SKI-Pinning) trägt. Der
-tatsächliche Datenaustausch (und damit der Weg zu OSCEV/mA-Steuerung) scheitert aktuell an diesem
-mutmaßlichen Client-TLS-Problem in `EEBUS.Net` — das ist der nächste zu klärende Schritt, bevor
-Milestone 2 (OSCEV) sinnvoll angegangen werden kann.
+tatsächliche Datenaustausch (und damit der Weg zu OSCEV/mA-Steuerung) scheitert an diesem konkret
+lokalisierten, aber noch nicht behobenen TLS-Client-Problem in `EEBUS.Net` — das ist der nächste
+Schritt vor Milestone 2 (OSCEV).
 
 ## Commit-Gate (Folgeschritt, nicht Teil dieses ADRs)
 
