@@ -152,13 +152,41 @@ Test 2 ist der entscheidende Beweis: **Die unveränderte NuGet-Bibliothek funkti
 einwandfrei, ganz ohne Patch.** Der zuvor gebaute Vendoring-Fork war also nicht die Lösung — er hat
 lediglich zufällig mitgeholfen, weil er auf einer Plattform (Linux) getestet wurde, die das Problem
 gar nicht hat. Unter **Windows** hingegen scheitert selbst die gepatchte Variante: `new
-CipherSuitesPolicy(...)` wirft dort sofort `PlatformNotSupportedException` — Windows/Schannel
-erlaubt .NET-Programmen grundsätzlich keine feingranulare Cipher-Suite-Kontrolle pro Verbindung.
-Das ist also unabhängig vom eigenen Code eine reine .NET/Windows-Plattformgrenze: Windows' TLS-1.2-
-Standardverhandlung bietet die von der eSystems-Ghost-Plattform strikt geforderte, ältere
-Cipher-Suite `TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256` offenbar nicht an (Microsoft hat
-nicht-AEAD-Suiten in aktuellen Windows-Versionen zugunsten von GCM zurückgedrängt), und es gibt
-keine Möglichkeit, das von .NET-Anwendungscode aus zu erzwingen.
+CipherSuitesPolicy(...)` wirft dort sofort `PlatformNotSupportedException` — offiziell von Microsoft
+dokumentiert: *"Platform is not a Linux system with OpenSSL 1.1.1 or higher or a macOS."*
+([CipherSuitesPolicy-Konstruktor](https://learn.microsoft.com/en-us/dotnet/api/system.net.security.ciphersuitespolicy.-ctor)).
+Windows/Schannel erlaubt .NET-Programmen grundsätzlich keine feingranulare
+Cipher-Suite-Kontrolle pro Verbindung — das ist unabhängig vom eigenen Code eine reine
+.NET/Windows-Plattformgrenze.
+
+**Präzisierung nach weiterer Recherche (30.08.2026, Nachtrag)**: Die anfängliche Vermutung, Windows
+habe `TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256` generell deaktiviert/zurückgedrängt, ist **so nicht
+belegt** und laut offizieller Microsoft-Referenz sogar falsch — die Suite ist auf Windows 11 v22H2+
+und Windows Server 2022 standardmäßig aktiviert (Platz 8 von ~20 in der Prioritätsliste, unterhalb
+der GCM-Suiten, aber nicht deaktiviert;
+[TLS Cipher Suites in Windows 11 v22H2+](https://learn.microsoft.com/en-us/windows/win32/secauthn/tls-cipher-suites-in-windows-11-v22h2)).
+Die tatsächliche Windows-interne Fehlerursache bleibt daher offen zwischen zwei plausiblen,
+offiziell dokumentierten Möglichkeiten (Quelle:
+[.NET SslStream-Troubleshooting, Abschnitt "Client and server do not possess a common algorithm"](https://learn.microsoft.com/en-us/dotnet/core/extensions/sslstream-troubleshooting) —
+Stand 24.08.2026):
+
+1. Windows bietet die Suite zwar an, aber die eingebettete eSystems-Ghost-Plattform kommt mit der
+   vollen Windows-ClientHello-Liste (viele weitere Suiten/Erweiterungen) nicht klar und lehnt pauschal
+   mit `handshake_failure` ab, obwohl ein gemeinsamer Nenner eigentlich vorhanden wäre.
+2. **Wahrscheinlicher**, da unser allererster .NET-Fehler exakt den dort beschriebenen Code zeigte:
+   der dokumentierte Abschnitt *"Handshake message exceeds the Schannel limit"* — Schannel bricht
+   mit `Win32Exception 0x80090326` (`SEC_E_ILLEGAL_MESSAGE`, "Das Format der empfangenen Nachricht
+   war unerwartet oder fehlerhaft") ab, u.a. wenn *"a peer sends a long list of acceptable
+   certificate issuers during mutual TLS authentication"* — genau unser Szenario (SHIP verlangt
+   Client-Zertifikat, mutual TLS).
+
+Eine abschließende Klärung, welche der beiden es ist, würde einen Wireshark/tcpdump-Mitschnitt des
+Windows-ClientHello im Vergleich zum erfolgreichen OpenSSL-ClientHello erfordern (von Microsofts
+eigener Troubleshooting-Doku als Vorgehen empfohlen) — nicht gemacht, da für die Konsequenz
+(Linux-Deployment) ohnehin irrelevant: **Ob Ursache 1 oder 2, keine ist von .NET-Anwendungscode aus
+unter Windows behebbar**, nur über OS-Konfiguration (`Enable-TlsCipherSuite`-PowerShell-Cmdlet,
+Gruppenrichtlinie, oder `SCHANNEL\Messaging`-Registry-Werte) — was den Umzug auf Linux als saubere
+Lösung nicht ändert.
 
 **Entscheidung**: `EEBUS.Net` bleibt das normale **NuGet-Paket** (kein Vendoring, kein Patch, keine
 Wartungslast für einen eigenen Fork). Stattdessen: **Der EEBus-Teil von `ems_at_home` muss unter
