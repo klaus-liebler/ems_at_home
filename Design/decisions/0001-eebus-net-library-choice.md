@@ -173,20 +173,40 @@ Stand 24.08.2026):
 1. Windows bietet die Suite zwar an, aber die eingebettete eSystems-Ghost-Plattform kommt mit der
    vollen Windows-ClientHello-Liste (viele weitere Suiten/Erweiterungen) nicht klar und lehnt pauschal
    mit `handshake_failure` ab, obwohl ein gemeinsamer Nenner eigentlich vorhanden wäre.
-2. **Wahrscheinlicher**, da unser allererster .NET-Fehler exakt den dort beschriebenen Code zeigte:
-   der dokumentierte Abschnitt *"Handshake message exceeds the Schannel limit"* — Schannel bricht
-   mit `Win32Exception 0x80090326` (`SEC_E_ILLEGAL_MESSAGE`, "Das Format der empfangenen Nachricht
-   war unerwartet oder fehlerhaft") ab, u.a. wenn *"a peer sends a long list of acceptable
-   certificate issuers during mutual TLS authentication"* — genau unser Szenario (SHIP verlangt
-   Client-Zertifikat, mutual TLS).
+2. Der dokumentierte Abschnitt *"Handshake message exceeds the Schannel limit"* — Schannel bricht
+   mit `Win32Exception 0x80090326` (`SEC_E_ILLEGAL_MESSAGE`) ab, u.a. wenn *"a peer sends a long
+   list of acceptable certificate issuers during mutual TLS authentication"*.
 
-Eine abschließende Klärung, welche der beiden es ist, würde einen Wireshark/tcpdump-Mitschnitt des
-Windows-ClientHello im Vergleich zum erfolgreichen OpenSSL-ClientHello erfordern (von Microsofts
-eigener Troubleshooting-Doku als Vorgehen empfohlen) — nicht gemacht, da für die Konsequenz
-(Linux-Deployment) ohnehin irrelevant: **Ob Ursache 1 oder 2, keine ist von .NET-Anwendungscode aus
-unter Windows behebbar**, nur über OS-Konfiguration (`Enable-TlsCipherSuite`-PowerShell-Cmdlet,
-Gruppenrichtlinie, oder `SCHANNEL\Messaging`-Registry-Werte) — was den Umzug auf Linux als saubere
-Lösung nicht ändert.
+**Hypothese 2 empirisch widerlegt (30.08.2026, zweiter Nachtrag)**: Per `openssl s_client -msg
+-debug` die tatsächlichen Handshake-Nachrichtengrößen des erfolgreichen Tests gemessen:
+
+| Nachricht | Richtung | Größe |
+|---|---|---|
+| ClientHello | → | 137 B |
+| ServerHello | ← | 97 B |
+| Certificate (Server, selbstsigniert) | ← | 523 B |
+| ServerKeyExchange | ← | 148 B |
+| CertificateRequest (**keine** CA-Namensliste) | ← | 12 B |
+| ServerHelloDone | ← | 4 B |
+| Certificate (unseres, inkl. Root-CA-Kette) | → | 1009 B |
+| ClientKeyExchange | → | 70 B |
+| CertificateVerify | → | 79 B |
+| Finished (beide Richtungen) | ↔ | je 16 B |
+
+Gesamter Handshake: 900 B gelesen, 1406 B geschrieben. Die dokumentierten Schannel-Limits liegen bei
+16 KB (`MessageLimitServer`) bzw. 32 KB (`MessageLimitClient`/`MessageLimitServerClientAuth`) — selbst
+die größte Einzelnachricht (unser Zertifikat mit Kette, 1009 B) nutzt nur ~3 % des 32-KB-Limits. Die
+Wallbox sendet zudem gar keine CA-Namensliste im `CertificateRequest` (12 B, "No client certificate
+CA names sent" laut OpenSSL). **Hypothese 2 (Nachrichtengrößenlimit) scheidet damit aus.**
+
+Es bleibt **Hypothese 1** (Cipher-Suiten-/Erweiterungs-Mismatch im vollständigen Windows-ClientHello)
+als wahrscheinlichste Erklärung übrig, weiterhin nicht abschließend bewiesen. Eine endgültige Klärung
+würde einen echten Windows-seitigen Paketmitschnitt (Wireshark) des .NET-`ClientHello` erfordern, um
+ihn byteweise mit dem oben erfolgreichen 137-Byte-OpenSSL-`ClientHello` zu vergleichen — nicht
+gemacht, da für die Konsequenz (Linux-Deployment) ohnehin irrelevant: **Unabhängig von der exakten
+Windows-internen Ursache ist sie von .NET-Anwendungscode aus nicht behebbar**, nur über
+OS-Konfiguration (`Enable-TlsCipherSuite`-PowerShell-Cmdlet, Gruppenrichtlinie) — was den Umzug auf
+Linux als saubere Lösung nicht ändert.
 
 **Entscheidung**: `EEBUS.Net` bleibt das normale **NuGet-Paket** (kein Vendoring, kein Patch, keine
 Wartungslast für einen eigenen Fork). Stattdessen: **Der EEBus-Teil von `ems_at_home` muss unter
