@@ -6,5 +6,18 @@ services:
     volumes:
       - influxdb-data:/var/lib/influxdb2
 
+  host:
+    build:
+      context: .
+      dockerfile: src/EmsAtHome.Host/Dockerfile
+    # network_mode: host is required for EEBus mDNS discovery and only works reliably on a
+    # native Linux Docker host - Docker Desktop (Windows/Mac) does not bridge LAN multicast
+    # into its Linux VM, see Design/decisions/0001-eebus-net-library-choice.md.
+    network_mode: host
+    environment:
+      - EMS_EEBUS_CERT_DIR=/certs
+    volumes:
+      - ${EMS_EEBUS_CERT_DIR}:/certs
+
 volumes:
   influxdb-data:

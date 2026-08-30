@@ -126,21 +126,56 @@ vermutlich strikt die SHIP-Spec-Cipher-Suite `TLS_ECDHE_ECDSA_WITH_AES_128_CBC_S
 Windows' Standard-Verhandlung für ausgehende Verbindungen bietet diese Kombination offenbar nicht
 zuverlässig an.
 
-**Konkreter Fix-Ansatz** (noch nicht umgesetzt): `TryConnectAsync` so patchen, dass es
-`wsClient.ConnectAsync(uri, invoker, cancellationToken)` mit einem eigenen
-`HttpMessageInvoker(new SocketsHttpHandler { SslOptions = new SslClientAuthenticationOptions {
-EnabledSslProtocols = SslProtocols.Tls12, CipherSuitesPolicy = new CipherSuitesPolicy([...]) } })`
-verwendet. Das erfordert, die Bibliothek als lokalen Quellcode-Fork einzubinden (PackageReference
-kann keine einzelne Methode patchen) — ein spürbarer Scope-Sprung (ganzer Quellbaum vendored statt
-NuGet-Referenz), noch nicht umgesetzt. Offenes Risiko: Falls Windows die geforderte Cipher-Suite auf
-OS-Ebene (Schannel-Registry/Gruppenrichtlinie) deaktiviert hat, hilft auch dieser Code-Fix nicht ohne
-zusätzliche OS-Konfiguration.
+**Erster (verworfener) Fix-Versuch**: `TryConnectAsync` per lokalem Quellcode-Fork
+(`src/vendor/EEBUS.Net/`) so zu patchen, dass es einen eigenen `HttpMessageInvoker` mit
+`SslClientAuthenticationOptions.EnabledSslProtocols = Tls12` und `CipherSuitesPolicy` verwendet.
+**Das war unnötig und wurde wieder entfernt** — siehe nächster Abschnitt. Festgehalten hier, damit
+der Denkfehler nachvollziehbar bleibt: Der Patch wurde gebaut, *bevor* die naheliegende Kontrollprobe
+(unveränderter Original-Code unter Linux) gemacht wurde. Das war die falsche Reihenfolge — die
+Kontrollprobe hätte zuerst kommen müssen, dann wäre der Fork nie nötig gewesen.
 
-**Status**: Bidirektionale SHIP-Discovery und -Pairing sind bewiesen funktionsfähig — der
-grundsätzliche Ansatz (eigener CEM-Server, CA-signiertes Zertifikat, SKI-Pinning) trägt. Der
-tatsächliche Datenaustausch (und damit der Weg zu OSCEV/mA-Steuerung) scheitert an diesem konkret
-lokalisierten, aber noch nicht behobenen TLS-Client-Problem in `EEBUS.Net` — das ist der nächste
-Schritt vor Milestone 2 (OSCEV).
+## Tatsächliche Ursache — kein Bibliotheks-Bug, reine Windows/.NET-Plattformgrenze (30.08.2026)
+
+Zwei Kontrolltests am selben Tag, beide gegen die echte Wallbox:
+
+1. `openssl s_client -connect 192.168.2.24:4711 -tls1_2 -cipher ECDHE-ECDSA-AES128-SHA256 -cert
+   ems-eebus.pem.crt -key ems-eebus.key` → **voller TLS-1.2-Handshake erfolgreich** ("New, TLSv1.2,
+   Cipher is ECDHE-ECDSA-AES128-SHA256"). Beweist: Unser Zertifikat, TLS 1.2 und genau diese
+   Cipher-Suite sind grundsätzlich in Ordnung.
+2. Ein minimaler .NET-10-Repro mit dem **unveränderten** `EEBUSManager.TryConnectAsync`-Codepfad
+   (einfacher `ClientWebSocket`, `ConnectAsync(uri, token)`-Overload, **kein** eigener
+   `SocketsHttpHandler`, **kein** `EnabledSslProtocols`, **kein** `CipherSuitesPolicy`) unter
+   **Linux** (Docker-Container `mcr.microsoft.com/dotnet/sdk:10.0`, Ubuntu 24.04) →
+   **`SUCCESS (unpatched code path) - WebSocket state: Open, SubProtocol: ship`**.
+
+Test 2 ist der entscheidende Beweis: **Die unveränderte NuGet-Bibliothek funktioniert unter Linux
+einwandfrei, ganz ohne Patch.** Der zuvor gebaute Vendoring-Fork war also nicht die Lösung — er hat
+lediglich zufällig mitgeholfen, weil er auf einer Plattform (Linux) getestet wurde, die das Problem
+gar nicht hat. Unter **Windows** hingegen scheitert selbst die gepatchte Variante: `new
+CipherSuitesPolicy(...)` wirft dort sofort `PlatformNotSupportedException` — Windows/Schannel
+erlaubt .NET-Programmen grundsätzlich keine feingranulare Cipher-Suite-Kontrolle pro Verbindung.
+Das ist also unabhängig vom eigenen Code eine reine .NET/Windows-Plattformgrenze: Windows' TLS-1.2-
+Standardverhandlung bietet die von der eSystems-Ghost-Plattform strikt geforderte, ältere
+Cipher-Suite `TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256` offenbar nicht an (Microsoft hat
+nicht-AEAD-Suiten in aktuellen Windows-Versionen zugunsten von GCM zurückgedrängt), und es gibt
+keine Möglichkeit, das von .NET-Anwendungscode aus zu erzwingen.
+
+**Entscheidung**: `EEBUS.Net` bleibt das normale **NuGet-Paket** (kein Vendoring, kein Patch, keine
+Wartungslast für einen eigenen Fork). Stattdessen: **Der EEBus-Teil von `ems_at_home` muss unter
+Linux laufen**, nicht unter Windows — z.B. als Docker-Container (Dockerfile liegt bei
+`src/EmsAtHome.Host/Dockerfile`) oder auf einem dedizierten Linux-Host (Raspberry Pi, NAS, kleiner
+Server). Das passt ohnehin zum Charakter eines dauerhaft laufenden HEMS-Dienstes und zur
+bestehenden Docker-Anbindung von InfluxDB. Entwickelt/gebaut wird weiterhin bequem unter Windows.
+
+**Offener Punkt (kein TLS-Problem mehr, sondern Netzwerk-Deployment)**: Ein Versuch, den *echten*
+`EmsAtHome.Host` unter Docker Desktop (Windows, `--network host`) laufen zu lassen, zeigte kein
+mDNS-Discovery der Wallbox — Docker Desktop auf Windows leitet Multicast-Verkehr aus dem physischen
+LAN offenbar nicht zuverlässig in seine interne Linux-VM durch. Das ist eine reine
+Docker-Desktop-Netzwerk-Einschränkung, kein Problem des eigentlichen Codes (der TLS-Verbindungsaufbau
+selbst wurde bereits unabhängig auf echtem Linux bewiesen, s.o.). Für einen vollständigen
+End-to-End-Test (mDNS-Discovery + Pairing + Datenverbindung in einem Prozess) braucht es entweder
+einen echten Linux-Host im selben LAN, oder eine Docker-Netzwerkkonfiguration mit echtem
+LAN-Zugriff (z.B. macvlan) statt Docker Desktops NAT/VM-Bridging.
 
 ## Commit-Gate (Folgeschritt, nicht Teil dieses ADRs)
 

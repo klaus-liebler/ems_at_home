@@ -15,13 +15,22 @@ langfristige Ziel.
 src/
   EmsAtHome.Abstractions/   IEnergyDevice, IMeter, ICharger, IBattery, DeviceRegistry, MeasurementSample
                             — stabiler Erweiterungspunkt für künftige Gerätetreiber
-  EmsAtHome.Eebus/          Wrapper um das NuGet-Paket EEBUS.Net (SHIP/SPINE-Stack):
+  EmsAtHome.Eebus/          Wrapper um EEBUS.Net (SHIP/SPINE-Stack):
                             EebusHostedService, EebusOptions, CertificateProvisioning,
                             ITrustedSkiStore/JsonTrustedSkiStore
-  EmsAtHome.Host/           ASP.NET-Core-Kompositionswurzel (Program.cs), registriert EebusHostedService
+  EmsAtHome.Host/           ASP.NET-Core-Kompositionswurzel (Program.cs), registriert EebusHostedService,
+                            Dockerfile (Linux-Deployment - siehe Hinweis unten)
 test/
   EmsAtHome.Eebus.Tests/    xUnit-Tests für Eebus-Bausteine
 ```
+
+**Wichtig: Muss unter Linux laufen, nicht unter Windows.** Das normale `EEBUS.Net`-NuGet-Paket
+(unverändert, kein Fork/Patch nötig) funktioniert unter Linux einwandfrei. Unter Windows scheitert
+der ausgehende EEBus-Verbindungsaufbau an einer TLS-Cipher-Suite, die Windows/.NET (Schannel)
+grundsätzlich nicht anbieten kann — eine reine Plattformgrenze, kein Bibliotheks- oder Codeproblem.
+Siehe ADR-0001 für die volle Beweisführung (inkl. eines zunächst fälschlich gebauten und wieder
+verworfenen Patch-Versuchs). Entwicklung/Bauen kann weiter unter Windows erfolgen, der laufende
+Dienst gehört auf einen Linux-Host oder in einen Container.
 
 Bewusst noch **nicht** angelegt: `EmsAtHome.Devices.*`-Projekte für die vier physischen Geräte,
 jegliche EF-Core/SQLite-Persistenz, jeglicher InfluxDB-Schreibpfad — siehe
