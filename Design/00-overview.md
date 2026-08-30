@@ -24,13 +24,16 @@ test/
   EmsAtHome.Eebus.Tests/    xUnit-Tests für Eebus-Bausteine
 ```
 
-**Wichtig: Muss unter Linux laufen, nicht unter Windows.** Das normale `EEBUS.Net`-NuGet-Paket
-(unverändert, kein Fork/Patch nötig) funktioniert unter Linux einwandfrei. Unter Windows scheitert
-der ausgehende EEBus-Verbindungsaufbau an einer TLS-Cipher-Suite, die Windows/.NET (Schannel)
-grundsätzlich nicht anbieten kann — eine reine Plattformgrenze, kein Bibliotheks- oder Codeproblem.
-Siehe ADR-0001 für die volle Beweisführung (inkl. eines zunächst fälschlich gebauten und wieder
-verworfenen Patch-Versuchs). Entwicklung/Bauen kann weiter unter Windows erfolgen, der laufende
-Dienst gehört auf einen Linux-Host oder in einen Container.
+**Wichtig: Läuft in WSL2 (Mirrored-Networking), nicht direkt unter Windows.** Das normale
+`EEBUS.Net`-NuGet-Paket (unverändert, kein Fork/Patch) funktioniert unter Linux einwandfrei — nur
+.NET unter Windows scheitert am ausgehenden EEBus-Verbindungsaufbau, weil es zwingend Schannel statt
+OpenSSL nutzt (OpenSSL selbst läuft auf demselben Windows-Rechner problemlos). Verifizierte Lösung:
+WSL2 mit `networkingMode=mirrored` (`C:\Users\<user>\.wslconfig`) — Linux auf **derselben** Windows-
+Maschine, mit echter LAN-Adresse statt NAT, wodurch auch mDNS-Discovery funktioniert. Siehe ADR-0001
+für die volle Beweisführung inkl. Paketmitschnitt-Analyse und zweier Sackgassen (ein verworfener
+Bibliotheks-Patch, ein zunächst fälschlich als "Lösung" behandelter Docker-Desktop-Versuch ohne
+funktionierendes mDNS). Das vorhandene Dockerfile bleibt für ein späteres Produktiv-Deployment auf
+einem dedizierten Linux-Host relevant, ist aber nicht der aktuelle Weg auf dieser Maschine.
 
 Bewusst noch **nicht** angelegt: `EmsAtHome.Devices.*`-Projekte für die vier physischen Geräte,
 jegliche EF-Core/SQLite-Persistenz, jeglicher InfluxDB-Schreibpfad — siehe

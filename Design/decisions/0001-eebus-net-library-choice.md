@@ -200,30 +200,93 @@ Wallbox sendet zudem gar keine CA-Namensliste im `CertificateRequest` (12 B, "No
 CA names sent" laut OpenSSL). **Hypothese 2 (Nachrichtengrößenlimit) scheidet damit aus.**
 
 Es bleibt **Hypothese 1** (Cipher-Suiten-/Erweiterungs-Mismatch im vollständigen Windows-ClientHello)
-als wahrscheinlichste Erklärung übrig, weiterhin nicht abschließend bewiesen. Eine endgültige Klärung
-würde einen echten Windows-seitigen Paketmitschnitt (Wireshark) des .NET-`ClientHello` erfordern, um
-ihn byteweise mit dem oben erfolgreichen 137-Byte-OpenSSL-`ClientHello` zu vergleichen — nicht
-gemacht, da für die Konsequenz (Linux-Deployment) ohnehin irrelevant: **Unabhängig von der exakten
-Windows-internen Ursache ist sie von .NET-Anwendungscode aus nicht behebbar**, nur über
-OS-Konfiguration (`Enable-TlsCipherSuite`-PowerShell-Cmdlet, Gruppenrichtlinie) — was den Umzug auf
-Linux als saubere Lösung nicht ändert.
+als wahrscheinlichste Erklärung übrig.
 
-**Entscheidung**: `EEBUS.Net` bleibt das normale **NuGet-Paket** (kein Vendoring, kein Patch, keine
-Wartungslast für einen eigenen Fork). Stattdessen: **Der EEBus-Teil von `ems_at_home` muss unter
-Linux laufen**, nicht unter Windows — z.B. als Docker-Container (Dockerfile liegt bei
-`src/EmsAtHome.Host/Dockerfile`) oder auf einem dedizierten Linux-Host (Raspberry Pi, NAS, kleiner
-Server). Das passt ohnehin zum Charakter eines dauerhaft laufenden HEMS-Dienstes und zur
-bestehenden Docker-Anbindung von InfluxDB. Entwickelt/gebaut wird weiterhin bequem unter Windows.
+**Hypothese 1 (Cipher-Suiten-Priorität) empirisch getestet und widerlegt (30.08.2026, dritter
+Nachtrag)**: Mit `Enable-TlsCipherSuite -Name 'TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256' -Position 0`
+(erhöhte PowerShell) die Suite systemweit an oberste Priorität gesetzt (bestätigt per
+`Get-TlsCipherSuite`, Wirkung sofort ohne Neustart) und den echten `EmsAtHome.Host` erneut gegen die
+Wallbox getestet — **identischer Fehler** (`HandshakeFailure`, `0x80090326`). Damit scheidet auch die
+Cipher-Suiten-Priorität als Ursache aus; ein reiner Registry-Patch zur Cipher-Suiten-Konfiguration
+löst das Problem **nicht**. Änderung anschließend zurückgenommen (Registry-Override lag entgegen
+erster Vermutung nicht unter dem Group-Policy-Pfad, sondern unter
+`HKLM\SYSTEM\CurrentControlSet\Control\Cryptography\Configuration\Local\SSL\00010002` — dort
+entfernt; `Get-TlsCipherSuite` zeigte danach weiterhin die alte Reihenfolge, vermutlich
+Schannel/LSA-Cache, der erst mit einem Neustart vollständig zurückgesetzt wird — sicherheitlich
+unkritisch, da die betroffene Suite ohnehin bereits aktiviert war und lediglich ihre Priorität
+kurzzeitig verändert wurde).
 
-**Offener Punkt (kein TLS-Problem mehr, sondern Netzwerk-Deployment)**: Ein Versuch, den *echten*
-`EmsAtHome.Host` unter Docker Desktop (Windows, `--network host`) laufen zu lassen, zeigte kein
-mDNS-Discovery der Wallbox — Docker Desktop auf Windows leitet Multicast-Verkehr aus dem physischen
-LAN offenbar nicht zuverlässig in seine interne Linux-VM durch. Das ist eine reine
-Docker-Desktop-Netzwerk-Einschränkung, kein Problem des eigentlichen Codes (der TLS-Verbindungsaufbau
-selbst wurde bereits unabhängig auf echtem Linux bewiesen, s.o.). Für einen vollständigen
-End-to-End-Test (mDNS-Discovery + Pairing + Datenverbindung in einem Prozess) braucht es entweder
-einen echten Linux-Host im selben LAN, oder eine Docker-Netzwerkkonfiguration mit echtem
-LAN-Zugriff (z.B. macvlan) statt Docker Desktops NAT/VM-Bridging.
+Per Paketmitschnitt (siehe unten) weiter eingegrenzt, aber die genaue letzte Ursache innerhalb von
+Schannel wurde am Ende nicht mehr abschließend isoliert — **und musste es auch nicht**, weil eine
+tatsächlich funktionierende Lösung auf genau dieser Windows-Maschine gefunden wurde (siehe
+"Tatsächlich verifizierte Lösung" unten).
+
+**Wichtige Präzisierung, wer/was hier eigentlich das Problem hat**: Die vorherige Formulierung
+"Windows kann diese Cipher-Suite nicht" war ungenau. Richtig ist: **OpenSSL selbst läuft auf
+demselben Windows-Rechner erfolgreich** (siehe openssl-Test oben) — OpenSSL bringt seine eigene,
+plattformunabhängige TLS-Implementierung mit und nutzt Windows' Schannel gar nicht. Das eigentliche
+Problem ist **.NET unter Windows**, das für `SslStream`/`SocketsHttpHandler` zwingend Schannel
+verwendet (keine Möglichkeit, stattdessen OpenSSL zu nutzen) — genau umgekehrt zu .NET unter Linux,
+das dort OpenSSL verwendet. Es ist also kein Windows-Betriebssystem-Problem, sondern eine
+Eigenheit von **.NET-auf-Windows' Schannel-Anbindung** speziell gegenüber dieser eingebetteten
+Gegenstelle.
+
+**Paketmitschnitt-Analyse (Windows-Bordmittel: `pktmon` statt Wireshark)**: Mit
+`pktmon filter add -i 192.168.2.24 -p 4711` + `pktmon start --capture --pkt-size 0` (erhöhte
+PowerShell) den echten .NET-`ClientHello` mitgeschnitten und mit `scapy` (Python) dekodiert:
+
+- Unrestringiert bietet .NET/Windows **409 Bytes Handshake-Body, 20 Cipher-Suiten**, inkl.
+  TLS-1.3-Erweiterungen `supported_versions` (0x002b) und `key_share` (0x0033, 208 Bytes) an.
+- Mit `EnabledSslProtocols = Tls12` verschwinden diese TLS-1.3-Erweiterungen sauber (138 Bytes,
+  18 Suiten) — **die Verbindung schlägt trotzdem identisch fehl**. Die TLS-1.3-Erweiterungs-
+  Hypothese ist damit **widerlegt**, nicht nur vermutet.
+- Test mit Cipher-Suiten-Liste auf **eine** Suite beschränkt (Gruppenrichtlinie "SSL Cipher Suite
+  Order", nicht nur Priorität): dabei versehentlich auch alle TLS-1.3-Suiten mit entfernt →
+  anderer, unspezifischer Fehler (`0x80090331`, "kein gemeinsamer Algorithmus") — kein sauberes
+  Ergebnis, da Windows dadurch schon lokal keine gültige Aushandlung mehr zusammenbekam. Sofort
+  zurückgesetzt (`Get-TlsCipherSuite` zeigt wieder 28 Standard-Suiten).
+- Damit bleibt als letzter, nicht mehr sauber isolierter Unterschied: 18 vs. 1 angebotene
+  TLS-1.2-Suite und die Erweiterung `encrypt_then_mac` (bei OpenSSL vorhanden, bei Windows nicht).
+  Nicht weiter verfolgt — s.u.
+
+## Tatsächlich verifizierte Lösung: WSL2 mit "mirrored" Netzwerkmodus (30.08.2026, vierter Nachtrag)
+
+**Wichtiger Kurswechsel**: "Läuft unter Linux" wurde vorher fälschlich als abgeschlossene Lösung
+hingestellt, obwohl nie ein *vollständiger* End-to-End-Test (mDNS-Discovery **und** TLS-Verbindung
+im selben Prozess) erfolgreich war — der Docker-Desktop-Test zeigte nur die TLS-Verbindung isoliert
+(kein mDNS), und "ein separater Linux-Host" ist für eine Windows-Arbeitsmaschine keine echte,
+sofort nutzbare Lösung. Das wurde zu Recht zurückgewiesen.
+
+**Tatsächliche Lösung**: [WSL2](https://learn.microsoft.com/windows/wsl/) mit
+[Mirrored-Netzwerkmodus](https://learn.microsoft.com/windows/wsl/networking#mirrored-mode-networking) —
+Linux auf **derselben Windows-Maschine**, keine separate Hardware, kein separates Gerät im Netz:
+
+1. `C:\Users\mail\.wslconfig` angelegt mit `[wsl2]` / `networkingMode=mirrored`, `wsl --shutdown` +
+   Neustart. Danach zeigt `ip addr` in WSL2 (Ubuntu-24.04) die **echte LAN-Adresse** des Rechners
+   (`192.168.2.101/24`, gleiches Subnetz wie die Wallbox) statt eines NAT-Adressraums — das ist der
+   entscheidende Unterschied zu Docker Desktops Standard-Networking und behebt das mDNS-Problem.
+2. .NET 10 SDK direkt in WSL2 installiert (`dotnet-install.sh`), Repo über den gemounteten Windows-
+   Pfad (`/mnt/c/repos/playground/ems_at_home`) verwendet — keine Kopie nötig.
+3. `EmsAtHome.Host` (unverändertes NuGet-Paket, kein Patch, keine Vendoring) darin gestartet →
+   **mDNS-Discovery UND TLS-Verbindung erfolgreich, mehrfach reproduziert**: Log zeigt fünf
+   vollständige Verbindungsaufbauten hintereinander (jeweils bis `EEBUS.Client.RunInternalAsync` /
+   `Connection.ReceiveAsync`, d.h. voll verbunden und in der Nachrichten-Warteschleife) — **kein
+   einziger `HandshakeFailure` mehr**.
+
+**Neu beobachtet, separates (kleineres) Thema**: Jede erfolgreich aufgebaute Verbindung bricht nach
+einiger Zeit mit `OperationCanceledException` in `Connection.ReceiveAsync` ab, woraufhin der
+eingebaute Reconnect-Loop (alle ~10s) sie neu aufbaut — ebenfalls erfolgreich. Das ist vermutlich
+ein Keepalive-/Timeout-Verhalten (naheliegend, da noch kein echter SPINE-Use-Case implementiert ist,
+auf den die Gegenseite regelmäßig antworten könnte) und **kein TLS-Problem** — separat zu
+untersuchen, sobald ein echter Use-Case (Milestone 2, OSCEV) ansteht.
+
+**Entscheidung**: `EEBUS.Net` bleibt das normale **NuGet-Paket** (kein Vendoring, kein Patch). Der
+EEBus-Teil von `ems_at_home` läuft künftig **in WSL2 mit Mirrored-Networking auf dieser Windows-
+Maschine** — nicht auf separater Hardware, nicht in Docker Desktop (dessen Standard-NAT/VM-
+Bridging das mDNS-Problem hatte). Das vorhandene `Dockerfile`
+(`src/EmsAtHome.Host/Dockerfile`) bleibt für spätere Produktiv-Deployments auf einem echten
+Linux-Host relevant (z.B. falls der Dienst irgendwann auf eine dedizierte Maschine ausgelagert
+wird), ist aber **nicht** die für den aktuellen Windows-Arbeitsplatz erforderliche Lösung.
 
 ## Commit-Gate (Folgeschritt, nicht Teil dieses ADRs)
 
