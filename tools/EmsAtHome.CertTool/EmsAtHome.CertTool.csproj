@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- CngKey/ECDsaCng are Windows-only APIs - this tool is Windows-only by design,
+         see Design/decisions/0001-eebus-net-library-choice.md. -->
+    <NoWarn>CA1416</NoWarn>
+  </PropertyGroup>
+
+</Project>

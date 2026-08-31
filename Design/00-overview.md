@@ -19,21 +19,19 @@ src/
                             EebusHostedService, EebusOptions, CertificateProvisioning,
                             ITrustedSkiStore/JsonTrustedSkiStore
   EmsAtHome.Host/           ASP.NET-Core-Kompositionswurzel (Program.cs), registriert EebusHostedService,
-                            Dockerfile (Linux-Deployment - siehe Hinweis unten)
+                            Dockerfile (optionales Linux-Deployment - siehe Hinweis unten)
+tools/
+  EmsAtHome.CertTool/       Erzeugt das EEBus-Zertifikat mit korrekt benanntem, dauerhaftem
+                            CNG-Schlüssel (siehe ADR-0001) - notwendig für den nativen Windows-Betrieb
 test/
   EmsAtHome.Eebus.Tests/    xUnit-Tests für Eebus-Bausteine
 ```
 
-**Wichtig: Läuft in WSL2 (Mirrored-Networking), nicht direkt unter Windows.** Das normale
-`EEBUS.Net`-NuGet-Paket (unverändert, kein Fork/Patch) funktioniert unter Linux einwandfrei — nur
-.NET unter Windows scheitert am ausgehenden EEBus-Verbindungsaufbau, weil es zwingend Schannel statt
-OpenSSL nutzt (OpenSSL selbst läuft auf demselben Windows-Rechner problemlos). Verifizierte Lösung:
-WSL2 mit `networkingMode=mirrored` (`C:\Users\<user>\.wslconfig`) — Linux auf **derselben** Windows-
-Maschine, mit echter LAN-Adresse statt NAT, wodurch auch mDNS-Discovery funktioniert. Siehe ADR-0001
-für die volle Beweisführung inkl. Paketmitschnitt-Analyse und zweier Sackgassen (ein verworfener
-Bibliotheks-Patch, ein zunächst fälschlich als "Lösung" behandelter Docker-Desktop-Versuch ohne
-funktionierendes mDNS). Das vorhandene Dockerfile bleibt für ein späteres Produktiv-Deployment auf
-einem dedizierten Linux-Host relevant, ist aber nicht der aktuelle Weg auf dieser Maschine.
+**Läuft nativ unter Windows** (ebenso unter Linux, z.B. WSL2/Docker, falls später gewünscht). Das
+normale `EEBUS.Net`-NuGet-Paket bleibt unverändert (kein Fork/Patch) — die Voraussetzung ist ein
+korrekt erzeugtes Zertifikat, siehe ADR-0001 (Rationale) für die Begründung. Live gegen die echte
+Wallbox verifiziert (mDNS-Discovery + TLS-Handshake + SHIP-Verbindung erfolgreich). Das Dockerfile
+bleibt als Option für ein späteres Linux-Produktiv-Deployment gültig, ist aber nicht erforderlich.
 
 Bewusst noch **nicht** angelegt: `EmsAtHome.Devices.*`-Projekte für die vier physischen Geräte,
 jegliche EF-Core/SQLite-Persistenz, jeglicher InfluxDB-Schreibpfad — siehe
@@ -48,8 +46,10 @@ evcc.io das für seine eigene Instanz macht. `EmsAtHome.Eebus` bindet das NuGet-
 SHIP-WebSocket-Endpunkt (Standard-Port 4712), unabhängig von der Kestrel-Instanz des eigenen
 ASP.NET-Hosts. Geräte (Wallbox, später ggf. weitere) verbinden sich als SHIP-Client zu uns,
 Vertrauen wird per SKI-Pinning (SHA1 des öffentlichen Zertifikatsschlüssels) hergestellt, nicht
-über eine klassische PKI-Zertifikatskette — ein von der eigenen Root-CA signiertes Zertifikat
-funktioniert daher problemlos als Server-Zertifikat.
+über eine klassische PKI-Zertifikatskette. Das Zertifikat ist daher bewusst **selbstsigniert**
+(nicht mehr von der eigenen Root-CA signiert wie ursprünglich geplant) — die Root-CA-Signierung
+brachte keinen funktionalen Vorteil (SHIP prüft nie die Kette) und stand dem für den nativen
+Windows-Betrieb nötigen Fix (benannter CNG-Schlüssel statt PFX-Import, siehe ADR-0001) im Weg.
 
 Details, Risiken und die konkrete Zertifikats-Erzeugung: siehe
 [0001-eebus-net-library-choice.md](decisions/0001-eebus-net-library-choice.md).
