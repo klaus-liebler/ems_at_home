@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8" />
+<title>ems_at_home – Wallbox</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+  .card { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; margin: 0; }
+  dt { font-weight: 600; }
+  .error { color: #b00020; }
+  button { padding: 0.5rem 1rem; }
+  label { margin-right: 1rem; }
+</style>
+</head>
+<body>
+<h1>ems_at_home – Wallbox</h1>
+<div class="card" id="status">Lade…</div>
+<div class="card">
+  <h2>Verbrauchsbegrenzung (LPC)</h2>
+  <label><input type="checkbox" id="limitActive" /> aktiv</label>
+  <label>Watt: <input type="number" id="limitWatts" value="4200" step="100" /></label>
+  <button id="applyLimit">Übernehmen</button>
+  <div id="limitResult"></div>
+</div>
+<script>
+async function refresh() {
+  const statusEl = document.getElementById('status');
+  try {
+    const res = await fetch('/api/eebus/wallbox');
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      statusEl.innerHTML = `<p class="error">${err.error ?? 'Keine Daten verfügbar.'}</p>`;
+      return;
+    }
+    const d = await res.json();
+    statusEl.innerHTML = `
+      <dl>
+        <dt>Name</dt><dd>${d.name ?? '–'}</dd>
+        <dt>SKI</dt><dd>${d.ski}</dd>
+        <dt>Verbindung</dt><dd>${d.connectionStatus}</dd>
+        <dt>Limit aktiv</dt><dd>${d.limitActive ?? '–'}</dd>
+        <dt>Limit (W)</dt><dd>${d.limitWatts ?? '–'}</dd>
+        <dt>Gesamtleistung (W)</dt><dd>${d.acPowerTotalWatts ?? '–'}</dd>
+        <dt>Netzbezug (W)</dt><dd>${d.gridConsumptionWatts ?? '–'}</dd>
+        <dt>Geladene Energie (kWh)</dt><dd>${d.acEnergyConsumedWattHours != null ? (d.acEnergyConsumedWattHours / 1000).toFixed(2) : '–'}</dd>
+        <dt>Spannung L1 (V)</dt><dd>${d.voltagePhaseA ?? '–'}</dd>
+        <dt>Spannung L2 (V)</dt><dd>${d.voltagePhaseB ?? '–'}</dd>
+        <dt>Spannung L3 (V)</dt><dd>${d.voltagePhaseC ?? '–'}</dd>
+      </dl>`;
+  } catch (e) {
+    statusEl.innerHTML = `<p class="error">Fehler beim Laden: ${e}</p>`;
+  }
+}
+
+document.getElementById('applyLimit').addEventListener('click', async () => {
+  const active = document.getElementById('limitActive').checked;
+  const watts = Number(document.getElementById('limitWatts').value);
+  const resultEl = document.getElementById('limitResult');
+  resultEl.textContent = 'Sende…';
+  try {
+    const res = await fetch('/api/eebus/wallbox/limit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active, watts }),
+    });
+    resultEl.textContent = res.ok ? 'Übernommen.' : 'Fehler beim Senden.';
+    refresh();
+  } catch (e) {
+    resultEl.textContent = 'Fehler: ' + e;
+  }
+});
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

@@ -1,0 +1,368 @@
+using EEBUS.KeyValues;
+using EEBUS.Messages;
+using EEBUS.Models;
+using EEBUS.Net;
+using EEBUS.Net.EEBUS.Data.KeyValues;
+using EEBUS.Net.EEBUS.Models.Data;
+using EEBUS.SHIP.Messages;
+using EEBUS.UseCases;
+using EEBUS.UseCases.ControllableSystem;
+using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
+using System.Xml;
+
+namespace EEBUS.SPINE.Commands
+{
+	public class DeviceConfigurationKeyValueListData : SpineCmdPayload<CmdDeviceConfigurationKeyValueListDataType>
+	{
+		static DeviceConfigurationKeyValueListData()
+		{
+			Register("deviceConfigurationKeyValueListData", new Class());
+		}
+
+		public new class Class : SpineCmdPayload<CmdDeviceConfigurationKeyValueListDataType>.Class
+		{
+
+            public override SpineCmdPayloadBase? CreateRead(Connection connection)
+            {
+				return new DeviceConfigurationKeyValueListData();
+            }
+
+			public override async ValueTask<SpineCmdPayloadBase?> CreateAnswerAsync(DatagramType datagram, HeaderType header, Connection connection)
+			{
+				if (datagram.header.cmdClassifier == "read")
+				{
+					DeviceConfigurationKeyValueListData payload = new DeviceConfigurationKeyValueListData();
+					DeviceConfigurationKeyValueListDataType data = payload.cmd[0].deviceConfigurationKeyValueListData;
+
+					List<DeviceConfigurationKeyValueDataType> datas = new();
+					foreach (var keyValue in connection.Local.KeyValues)
+						datas.Add(keyValue.Data);
+
+					data.deviceConfigurationKeyValueData = datas.ToArray();
+
+					return payload;
+				}
+				else if (datagram.header.cmdClassifier == "write")
+				{
+					// ApprovalResult was set in Evaluate (which runs before CreateAnswer)
+					var approvalResult = datagram.ApprovalResult ?? WriteApprovalResult.Accept();
+					return ResultData.FromApprovalResult(approvalResult);
+				}
+				else
+				{
+					return null;
+				}
+			}
+
+			private async Task<WriteApprovalResult> GetApprovalForKeyValueAsync(Connection connection, KeyValue keyValue, ValueType value)
+			{
+				string? remoteDeviceId = connection.Remote?.DeviceId;
+				string? remoteSki = connection.Remote?.SKI?.ToString();
+
+				switch (keyValue.KeyName)
+				{
+					case "failsafeConsumptionActivePowerLimit":
+						{
+							var request = new FailsafeLimitWriteRequest(
+								PowerDirection.Consumption,
+								value.scaledNumber?.number ?? 0,
+								value.scaledNumber?.scale ?? 0,
+								remoteDeviceId,
+								remoteSki
+							);
+
+							var handlers = connection.Local.GetUseCaseEvents<LPCEvents>();
+							if (handlers.Count == 0)
+								return WriteApprovalResult.Accept("No handlers - auto-approved");
+
+							foreach (var handler in handlers)
+							{
+								var result = await handler.ApproveFailsafeLimitWriteAsync(request);
+								if (!result.Approved)
+									return result;
+							}
+							return WriteApprovalResult.Accept();
+						}
+
+					case "failsafeProductionActivePowerLimit":
+						{
+							var request = new FailsafeLimitWriteRequest(
+								PowerDirection.Production,
+								value.scaledNumber?.number ?? 0,
+								value.scaledNumber?.scale ?? 0,
+								remoteDeviceId,
+								remoteSki
+							);
+
+							var handlers = connection.Local.GetUseCaseEvents<LPPEvents>();
+							if (handlers.Count == 0)
+								return WriteApprovalResult.Accept("No handlers - auto-approved");
+
+							foreach (var handler in handlers)
+							{
+								var result = await handler.ApproveFailsafeLimitWriteAsync(request);
+								if (!result.Approved)
+									return result;
+							}
+							return WriteApprovalResult.Accept();
+						}
+
+					case "failsafeDurationMinimum":
+						{
+							TimeSpan duration = TimeSpan.Zero;
+							if (!string.IsNullOrEmpty(value.duration))
+							{
+								try { duration = XmlConvert.ToTimeSpan(value.duration); }
+								catch { /* ignore */ }
+							}
+
+							var request = new FailsafeDurationWriteRequest(duration, remoteDeviceId, remoteSki);
+
+							var handlers = connection.Local.GetUseCaseEvents<LPCorLPPEvents>();
+							var result = WriteApprovalResult.Accept("No handlers - auto-approved");
+							foreach (var handler in handlers)
+							{
+								result = await handler.ApproveFailsafeDurationMinimumWriteAsync(request);
+								// Logic is inverted for FailsafeDurationMinimum on purpose
+								// we must accept a FailsafeDurationMinimum write if either LPC or LPP accept it
+								if (result.Approved)
+									return result;
+							}
+							return result;
+						}
+
+					default:
+						return WriteApprovalResult.Accept("Unknown key - auto-approved");
+				}
+			}
+
+			public override async ValueTask EvaluateAsync(Connection connection, DatagramType datagram)
+			{
+				if (datagram.header.cmdClassifier == "write")
+				{
+
+					DeviceConfigurationKeyValueListData? payload = datagram.payload == null
+						? null
+						: JsonHelper.FromJsonNode<DeviceConfigurationKeyValueListData>(datagram.payload);
+
+                    if (payload == null || payload.cmd[0].deviceConfigurationKeyValueListData.deviceConfigurationKeyValueData == null)
+						return;
+
+                    int keyId = payload.cmd[0].deviceConfigurationKeyValueListData.deviceConfigurationKeyValueData[0].keyId;
+					ValueType value = payload.cmd[0].deviceConfigurationKeyValueListData.deviceConfigurationKeyValueData[0].value;
+
+					KeyValue? keyValue = connection.Local.KeyValues.FirstOrDefault(kv => kv.Data.keyId == keyId);
+					if (keyValue == null)
+					{
+						datagram.ApprovalResult = WriteApprovalResult.Deny("Unknown key ID");
+						return;
+					}
+
+					//foreach (var kvp in payload?.cmd[0].deviceConfigurationKeyValueListData.deviceConfigurationKeyValueData ?? []) {
+					//                   KeyValue? keyValue = connection.Local.KeyValues.FirstOrDefault(kv => kv.Data.keyId == kvp.keyId);
+					//                   if (null != keyValue)
+					//                   {
+					//                       keyValue.SetValue(kvp.value);
+					//                       await keyValue.SendEventAsync(connection);
+					//                   }
+					//               }
+					//               await SendNotifyAsync(connection.Local, datagram.header.addressDestination);
+
+					WriteApprovalResult approvalResult = await GetApprovalForKeyValueAsync(connection, keyValue, value);
+					datagram.ApprovalResult = approvalResult;
+
+					if (approvalResult.Approved)
+					{
+						keyValue.SetValue(value);
+						await keyValue.SendEventAsync(connection);
+						await SendNotifyAsync(connection.Local, datagram.header.addressDestination);
+
+					}
+				}
+				else if (datagram.header.cmdClassifier == "reply" || datagram.header.cmdClassifier == "notify")
+				{
+					DeviceConfigurationKeyValueListData? payload = datagram.payload == null
+						? null
+						: JsonHelper.FromJsonNode<DeviceConfigurationKeyValueListData>(datagram.payload);
+
+					if (payload == null || connection.Remote == null) return;
+
+					foreach (var kvp in payload.cmd[0].deviceConfigurationKeyValueListData.deviceConfigurationKeyValueData ?? [])
+					{
+						RemoteKeyValue? existing = connection.Remote.KeyValues.FirstOrDefault(kv => kv is RemoteKeyValue rkv && rkv.KeyId == kvp.keyId) as RemoteKeyValue;
+						if (existing != null)
+						{
+							existing.Update(null, kvp);
+						}
+						else
+						{
+							connection.Remote.KeyValues.Add(new RemoteKeyValue(connection.Remote, null, kvp));
+						}
+					}
+
+					await SendRemoteConfigurationChangedEventAsync(connection);
+				}
+			}
+
+			private async Task SendRemoteConfigurationChangedEventAsync(Connection connection)
+			{
+				if (connection.Remote == null) return;
+
+				var deviceConfigEvents = connection.Local.GetUseCaseEvents<MonitoringUseCaseEvents>();
+				foreach (var ev in deviceConfigEvents)
+				{
+					await ev.DeviceConfigurationChangedAsync(connection.Remote);
+				}
+			}
+
+			public override JsonNode? CreateNotifyPayload(LocalDevice localDevice)
+			{
+				DeviceConfigurationKeyValueListData payload = new DeviceConfigurationKeyValueListData();
+				DeviceConfigurationKeyValueListDataType data = payload.cmd[0].deviceConfigurationKeyValueListData;
+
+				List<DeviceConfigurationKeyValueDataType> datas = new();
+				foreach (var keyValue in localDevice.KeyValues)
+					datas.Add(keyValue.Data);
+
+				data.deviceConfigurationKeyValueData = datas.ToArray();
+
+				return payload.ToJsonNode();
+			}
+
+            public override async Task WriteDataAsync(Connection connection, DeviceData deviceData)
+            {
+
+                LocalDevice localDevice = connection.Local;
+                bool didChange = false;
+
+				if (deviceData.Lpc?.FailSafeLimit != null)
+				{
+					FailsafeConsumptionActivePowerLimitKeyValue? lpcFailsafeLimitKeyValue = localDevice.GetKeyValue<FailsafeConsumptionActivePowerLimitKeyValue>();
+					if (lpcFailsafeLimitKeyValue != null)
+					{
+						lpcFailsafeLimitKeyValue.Value = deviceData.Lpc.FailSafeLimit.Value;
+						didChange = true;
+					}
+				}
+
+				if (deviceData.Lpp?.FailSafeLimit != null)
+				{
+					FailsafeProductionActivePowerLimitKeyValue? lppFailsafeLimitKeyValue = localDevice.GetKeyValue<FailsafeProductionActivePowerLimitKeyValue>();
+					if (lppFailsafeLimitKeyValue != null)
+					{
+						lppFailsafeLimitKeyValue.Value = deviceData.Lpp.FailSafeLimit.Value;
+						didChange = true;
+					}
+				}
+
+				if (deviceData.FailSafe?.LimitDuration != null)
+				{
+					FailsafeDurationMinimumKeyValue? failsafeDurationKeyValue = localDevice.GetKeyValue<FailsafeDurationMinimumKeyValue>();
+					if (failsafeDurationKeyValue != null)
+					{
+						failsafeDurationKeyValue.Duration = XmlConvert.ToString(deviceData.FailSafe.LimitDuration.Value);
+						didChange = true;
+					}
+				}
+
+				if (deviceData.Mgcp?.PvCurtailmentLimitFactor != null)
+				{
+					PvCurtailmentLimitFactorKeyValue? pvCurtailmentLimitFactorKeyValue = localDevice.GetKeyValue<PvCurtailmentLimitFactorKeyValue>();
+                    if (pvCurtailmentLimitFactorKeyValue != null)
+                    {
+                        pvCurtailmentLimitFactorKeyValue.Value = deviceData.Mgcp.PvCurtailmentLimitFactor.Value;
+                        didChange = true;
+                    }
+                }
+
+				if (didChange)
+				{
+					var featureAddress = localDevice.GetFeatureAddress("DeviceConfiguration", true);
+					if (featureAddress != null)
+					{
+						await SendNotifyAsync(localDevice, featureAddress);
+					}
+				}
+			}
+
+            public override async Task ReadDataAsync(Connection connection, DeviceData deviceData)
+            {
+				if (connection.Remote == null) return;
+
+                AddressType? featureSourceAddress = connection.Local.GetFeatureAddress("DeviceConfiguration", false);
+                AddressType? featureDestinationAddress = connection.Remote.GetFeatureAddress("DeviceConfiguration", true);
+
+                if (featureSourceAddress == null || featureDestinationAddress == null) return;
+
+                if (deviceData.Lpc != null || deviceData.Lpp != null || deviceData.FailSafe != null || deviceData.Mgcp != null)
+				{
+                    var deviceConfigurationKeyValueListData = await ReadFunctionFromRemoteAsync<DeviceConfigurationKeyValueListData>(connection, "DeviceConfiguration", "deviceConfigurationKeyValueListData");
+					var deviceConfigurationKeyValueDescriptionListData = await ReadFunctionFromRemoteAsync<DeviceConfigurationKeyValueDescriptionListData>(connection, "DeviceConfiguration", "deviceConfigurationKeyValueDescriptionListData");
+                    if (deviceConfigurationKeyValueListData != null && deviceConfigurationKeyValueDescriptionListData != null)
+					{
+						var lpcFailSafeLimitKeyId = deviceConfigurationKeyValueDescriptionListData.cmd.First().deviceConfigurationKeyValueDescriptionListData.deviceConfigurationKeyValueDescriptionData?.FirstOrDefault(d => d.keyName == "failsafeConsumptionActivePowerLimit")?.keyId;
+						var lppFailSafeLimitKeyId = deviceConfigurationKeyValueDescriptionListData.cmd.First().deviceConfigurationKeyValueDescriptionListData.deviceConfigurationKeyValueDescriptionData?.FirstOrDefault(d => d.keyName == "failsafeProductionActivePowerLimit")?.keyId;
+						var failsafeDurationKeyId = deviceConfigurationKeyValueDescriptionListData.cmd.First().deviceConfigurationKeyValueDescriptionListData.deviceConfigurationKeyValueDescriptionData?.FirstOrDefault(d => d.keyName == "failsafeDurationMinimum")?.keyId;
+						var pvCurtailmentLimitFactorKeyId = deviceConfigurationKeyValueDescriptionListData.cmd.First().deviceConfigurationKeyValueDescriptionListData.deviceConfigurationKeyValueDescriptionData?.FirstOrDefault(d => d.keyName == "pvCurtailmentLimitFactor")?.keyId;
+
+						if (lpcFailSafeLimitKeyId.HasValue && deviceData.Lpc != null)
+						{
+							var lpcFailSafeLimitKeyValue = deviceConfigurationKeyValueListData.cmd.First().deviceConfigurationKeyValueListData.deviceConfigurationKeyValueData?.FirstOrDefault(d => d.keyId == lpcFailSafeLimitKeyId.Value);
+                            deviceData.Lpc.FailSafeLimit = lpcFailSafeLimitKeyValue?.value?.scaledNumber?.ToLong();
+						}
+
+                        if (lppFailSafeLimitKeyId.HasValue && deviceData.Lpp != null)
+                        {
+                            var lppFailSafeLimitKeyValue = deviceConfigurationKeyValueListData.cmd.First().deviceConfigurationKeyValueListData.deviceConfigurationKeyValueData?.FirstOrDefault(d => d.keyId == lppFailSafeLimitKeyId.Value);
+                            deviceData.Lpp.FailSafeLimit = lppFailSafeLimitKeyValue?.value?.scaledNumber?.ToLong();
+                        }
+
+                        if (failsafeDurationKeyId.HasValue && deviceData.FailSafe != null)
+                        {
+                            var failsafeDurationKeyValue = deviceConfigurationKeyValueListData.cmd.First().deviceConfigurationKeyValueListData.deviceConfigurationKeyValueData?.FirstOrDefault(d => d.keyId == failsafeDurationKeyId.Value);
+                            deviceData.FailSafe.LimitDuration = (int?)failsafeDurationKeyValue?.value?.scaledNumber?.ToLong();
+                        }
+
+						if (pvCurtailmentLimitFactorKeyId.HasValue && deviceData.Mgcp != null)
+						{
+							var pvCurtailmentLimitFactorKeyValue = deviceConfigurationKeyValueListData.cmd.First().deviceConfigurationKeyValueListData.deviceConfigurationKeyValueData?.FirstOrDefault(d => d.keyId == pvCurtailmentLimitFactorKeyId.Value);
+                            deviceData.Mgcp.PvCurtailmentLimitFactor = pvCurtailmentLimitFactorKeyValue?.value?.scaledNumber?.ToLong();
+                        }
+                    }
+                }
+            }
+		}
+	}
+
+
+	[System.SerializableAttribute()]
+	public class CmdDeviceConfigurationKeyValueListDataType : CmdType
+	{
+        public DeviceConfigurationKeyValueListDataType deviceConfigurationKeyValueListData { get; set; } = new();
+	}
+
+	[System.SerializableAttribute()]
+	public class DeviceConfigurationKeyValueListDataType
+	{
+		public DeviceConfigurationKeyValueDataType[]? deviceConfigurationKeyValueData { get; set; }
+	}
+
+	[System.SerializableAttribute()]
+	public class DeviceConfigurationKeyValueDataType
+	{
+		public int keyId { get; set; }
+
+		public ValueType value { get; set; } = new();
+
+		public bool isValueChangeable { get; set; }
+	}
+
+	[System.SerializableAttribute()]
+	public class ValueType
+	{
+		public ScaledNumberType? scaledNumber { get; set; }
+
+		public string? duration { get; set; }
+	}
+}

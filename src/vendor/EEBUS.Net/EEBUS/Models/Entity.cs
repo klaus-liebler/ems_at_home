@@ -1,0 +1,213 @@
+﻿using EEBUS.SPINE.Commands;
+using Microsoft.AspNetCore.Http.HttpResults;
+using System.Diagnostics;
+
+namespace EEBUS.Models
+{
+    public abstract class Entity
+    {
+        protected Entity(int index, LocalDevice local, EntitySettings entitySettings)
+        {
+            this.index = index;
+            this.local = local;
+            this.Type = entitySettings.Type;
+            this.Origin = EntityOrigin.Local;
+
+            foreach (UseCaseSettings usecaseSettings in entitySettings.UseCases)
+            {
+                var useCase = UseCase.Create(usecaseSettings, this);
+                if (useCase != null)
+                {
+                    UseCases.Add(useCase);
+                }
+            }
+        }
+
+        public Entity(int index, LocalDevice local, EntityInformationType entityInfo, FeatureInformationType[] featureInfos)
+        {
+            this.index = index;
+            this.local = local;
+            this.Type = entityInfo.description.entityType;
+            this.Origin = EntityOrigin.Remote;
+
+            foreach (FeatureInformationType featureInfo in featureInfos)
+            {
+                if (EqualIndex(featureInfo.description.featureAddress.entity))
+                {
+                    var feature = Feature.Create(featureInfo, this);
+                    if (feature != null && !this.Features.Any(f => f.Type == feature.Type && f.Role == feature.Role))
+                    {
+                        this.Features.Add(feature); 
+                        //GetOrAdd(feature);    we can not use this because it changes the feature index! e.g. if we fill this data for a remote device the indices do not match anymore!
+                    }
+                }
+            }
+        }
+
+        public abstract class Class
+        {
+            public abstract Entity Create(int index, LocalDevice local, EntitySettings entitySettings);
+
+            public abstract Entity Create(int index, LocalDevice local, EntityInformationType entityInfo, FeatureInformationType[] featureInfos);
+        }
+
+        static public Entity? Create(int index, LocalDevice local, EntitySettings entitySettings)
+        {
+            if (entityClasses.TryGetValue(entitySettings.Type, out Class cls))
+            {
+                return cls.Create(index, local, entitySettings);
+            } else
+            {
+                if (entityClasses.TryGetValue("Generic", out Class? genericClass) && genericClass != null)
+                {
+                    return genericClass.Create(index, local, entitySettings);
+                }
+            }
+
+            return null;
+        }
+
+        static public Entity? Create(LocalDevice local, EntityInformationType entityInfo, FeatureInformationType[] featureInfos)
+        {
+            // Missing: if (1 < Index.Length) => this is a child of another entity. Look for it and set it as owner
+
+            int[] Index = entityInfo.description.entityAddress.entity;
+            int index = Index[Index.Length - 1];
+
+            string type = entityInfo.description.entityType;
+
+            if (entityClasses.TryGetValue(type, out Class cls))
+            {
+                return cls.Create(index, local, entityInfo, featureInfos);
+            }
+            else
+            {
+                if (entityClasses.TryGetValue("Generic", out Class? genericClass) && genericClass != null)
+                {
+                    return genericClass.Create(index, local, entityInfo, featureInfos);
+                }
+            }
+
+            return null;
+        }
+
+        static protected Dictionary<string, Class> entityClasses = new Dictionary<string, Class>();
+
+        static protected void Register(string name, Class cls)
+        {
+            entityClasses.Add(name, cls);
+        }
+
+
+        private int index { get; }
+
+        public string Type { get; }
+
+        /// <summary>
+        /// Local: built from our own EntitySettings (appsettings). Remote: built from a remote
+        /// device's SPINE discovery data. UseCase constructors that seed placeholder/default data
+        /// (measurement channels, limits, ...) must gate on this being Local rather than inferring
+        /// it from a settings field being non-null - see EEBUS.UseCases.MonitoringAppliance/
+        /// MonitoredUnit/GridConnectionPoint's Monitoring* constructors for the pattern.
+        /// </summary>
+        public EntityOrigin Origin { get; }
+
+        public List<Entity> Entities = new();
+        public List<Feature> Features = new();
+        public List<UseCase> UseCases = new();
+
+        private LocalDevice local = null;
+        private Entity owner = null;
+
+        public int[] Index
+        {
+            get
+            {
+                if (null == this.owner)
+                {
+                    return new int[1] { this.index };
+                }
+                else
+                {
+                    List<int> indices = this.owner.Index.ToList();
+                    indices.Add(this.index);
+                    return indices.ToArray();
+                }
+            }
+        }
+
+        public bool EqualIndex(int[] otherIndex)
+        {
+            if (this.Index.Length != otherIndex.Length)
+                return false;
+
+            for (int i = 0; i < this.Index.Length; i++)
+                if (this.Index[i] != otherIndex[i])
+                    return false;
+
+            return true;
+        }
+
+        public LocalDevice Local
+        {
+            get
+            {
+                return this.local;
+            }
+        }
+
+        public List<UseCaseInformationType> UseCaseInformations
+        {
+            get
+            {
+                List<string> actors = new();
+                foreach (var useCase in this.UseCases)
+                    if (-1 == actors.IndexOf(useCase.Actor))
+                        actors.Add(useCase.Actor);
+
+                List<UseCaseInformationType> infos = new();
+
+                foreach (string actor in actors)
+                {
+                    UseCaseInformationType info = new();
+
+                    info.address.device = this.Local.DeviceId;
+                    info.address.entity = this.Index;
+                    info.actor = actor;
+
+                    List<UseCaseSupportType> supports = new();
+
+                    foreach (var useCase in this.UseCases)
+                        if (useCase.Actor == actor)
+                            supports.Add(useCase.Information);
+
+                    info.useCaseSupport = supports.ToArray();
+
+                    infos.Add(info);
+                }
+
+                return infos;
+            }
+        }
+
+        public void FillData<T>(List<T> dataList, Connection connection)
+        {
+            this.UseCases.ForEach(uc => uc.FillData(dataList, connection, this));
+        }
+
+        protected virtual int MinIndex { get { return 1; } }
+
+        public Feature GetOrAdd(Feature feature)
+        {
+            Feature? found = this.Features.FirstOrDefault(f => f.Type == feature.Type && f.Role == feature.Role);
+
+            if (null != found)
+                return found;
+
+            feature.Index = this.Features.Count + MinIndex;
+            this.Features.Add(feature);
+
+            return feature;
+        }
+    }
+}

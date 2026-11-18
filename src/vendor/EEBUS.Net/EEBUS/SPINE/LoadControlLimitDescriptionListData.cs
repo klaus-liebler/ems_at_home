@@ -1,0 +1,103 @@
+﻿using EEBUS.DataStructures;
+using EEBUS.Messages;
+using EEBUS.Net;
+using EEBUS.Net.EEBUS.Data.DataStructures;
+using System.Text.Json.Serialization;
+
+namespace EEBUS.SPINE.Commands
+{
+	public class LoadControlLimitDescriptionListData : SpineCmdPayload<CmdLoadControlLimitDescriptionListDataType>
+	{
+		static LoadControlLimitDescriptionListData()
+		{
+			Register( "loadControlLimitDescriptionListData", new Class() );
+		}
+
+		public new class Class : SpineCmdPayload<CmdLoadControlLimitDescriptionListDataType>.Class
+		{
+            public override SpineCmdPayloadBase? CreateRead(Connection connection)
+            {
+				return new LoadControlLimitDescriptionListData();
+            }
+
+			public override async ValueTask<SpineCmdPayloadBase?> CreateAnswerAsync( DatagramType datagram, HeaderType header, Connection connection )
+			{
+                if (datagram.header.cmdClassifier != "read")
+                    return null;
+
+                LoadControlLimitDescriptionListData	    payload = new LoadControlLimitDescriptionListData();
+				LoadControlLimitDescriptionListDataType data	= payload.cmd[0].loadControlLimitDescriptionListData;
+
+				List<LoadControlLimitDescriptionDataType> datas = new();
+				foreach ( LoadControlLimitDataStructure description in connection.Local.GetDataStructures<LoadControlLimitDataStructure>() )
+					datas.Add( description.DescriptionData );
+
+				data.loadControlLimitDescriptionData = datas.ToArray();
+
+				return payload;
+			}
+
+            public override async ValueTask EvaluateAsync(Connection connection, DatagramType datagram)
+            {
+                if (datagram.header.cmdClassifier != "notify" && datagram.header.cmdClassifier != "reply")
+                    return;
+
+                LoadControlLimitDescriptionListData? command = datagram.payload == null
+                    ? null
+                    : JsonHelper.FromJsonNode<LoadControlLimitDescriptionListData>(datagram.payload);
+
+                if (command == null || command.cmd == null || command.cmd.Length == 0 || connection.Remote == null)
+                    return;
+
+                List<LoadControlLimitDataStructure> structures = connection.Remote.GetDataStructures<LoadControlLimitDataStructure>();
+                foreach (LoadControlLimitDescriptionDataType item in command.cmd.First().loadControlLimitDescriptionListData.loadControlLimitDescriptionData ?? [])
+                {
+                    var structure = structures.FirstOrDefault(s => s.DescriptionData.limitId == item.limitId);
+
+                    if (structure == null)
+                    {
+                        structure = new LoadControlLimitDataStructure(item.limitDirection, 0, 0, string.Empty, false);
+                        connection.Remote.Add(structure);
+						structure.Id = item.limitId;
+                    }
+                    else
+                    {
+						structure.LimitDirection = item.limitDirection;
+                    }
+                }
+            }
+        }
+	}
+
+	[System.SerializableAttribute()]
+	public class CmdLoadControlLimitDescriptionListDataType : CmdType
+	{
+        public LoadControlLimitDescriptionListDataType loadControlLimitDescriptionListData { get; set; } = new();
+	}
+
+	[System.SerializableAttribute()]
+	public class LoadControlLimitDescriptionListDataType
+	{
+		public LoadControlLimitDescriptionDataType[]? loadControlLimitDescriptionData { get; set; }
+	}
+
+	[System.SerializableAttribute()]
+	public class LoadControlLimitDescriptionDataType
+	{
+		public uint	  limitId		 { get; set; }
+
+		public string limitType		 { get; set; }
+
+		public string limitCategory	 { get; set; }
+
+		public string limitDirection { get; set; }
+
+		public uint	  measurementId	 { get; set; }
+		
+		public string unit			 { get; set; }
+		
+		public string? scopeType		 { get; set; }
+		
+		public string? label			 { get; set; }
+	}
+}

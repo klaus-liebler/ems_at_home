@@ -18,8 +18,13 @@ src/
   EmsAtHome.Eebus/          Wrapper um EEBUS.Net (SHIP/SPINE-Stack):
                             EebusHostedService, EebusOptions, CertificateProvisioning,
                             ITrustedSkiStore/JsonTrustedSkiStore
+  EmsAtHome.EebusCli/       Kleine interaktive Konsolen-Demo (eigene Identität, Port 4713) zum
+                            Browsen entdeckter Use-Cases, Lesen/Schreiben eines Werts - siehe ADR-0003
   EmsAtHome.Host/           ASP.NET-Core-Kompositionswurzel (Program.cs), registriert EebusHostedService,
                             Dockerfile (optionales Linux-Deployment - siehe Hinweis unten)
+  vendor/EEBUS.Net/         In-Repo-Fork von kermigmbh/EEBUS.Net 1.0.30 (Commit 24d9cd9) - siehe
+                            ORIGIN.md und ADR-0003 für Herkunft, Logging-Instrumentierung
+                            ("EEBUS.Ship"/"EEBUS.Spine") und Spec-Review-Befunde
 tools/
   EmsAtHome.CertTool/       Erzeugt das EEBus-Zertifikat mit korrekt benanntem, dauerhaftem
                             CNG-Schlüssel (siehe ADR-0001) - notwendig für den nativen Windows-Betrieb
@@ -54,11 +59,35 @@ Windows-Betrieb nötigen Fix (benannter CNG-Schlüssel statt PFX-Import, siehe A
 Details, Risiken und die konkrete Zertifikats-Erzeugung: siehe
 [0001-eebus-net-library-choice.md](decisions/0001-eebus-net-library-choice.md).
 
+## Walking Skeleton: Dashboard + LPC/Monitoring (Milestone 2, Teil 1)
+
+Bevor der (laut ADR-0002 fork-pflichtige) OPEV-Use-Case gebaut wird, demonstriert ein einfacher
+Durchstich die SPINE-Kommunikation end-to-end mit den beiden Use-Cases, die `EEBUS.Net` 1.0.30
+bereits unverändert vollständig unterstützt:
+
+- **LimitationOfPowerConsumption** (Actor `EnergyGuard`, read+write) — dient hier als "kleine
+  Eingriffsmöglichkeit" (Verbrauchslimit setzen/aufheben), nicht als produktive §14a-Steuerung.
+- **MonitoringOfPowerConsumption** (Actor `MonitoringAppliance`, read-only) — liest Leistungs-/
+  Strom-/Spannungsmesswerte der Wallbox, sofern sie diese exponiert.
+
+`EmsAtHome.Eebus` registriert `EEBUSManager` selbst als DI-Singleton (statt es in
+`EebusHostedService` zu kapseln), damit `WallboxQueries` (Übersetzung in die eigene
+`WallboxSnapshot`-DTO) von beliebigen Komponenten injiziert werden kann. `EmsAtHome.Host` exponiert
+das über `GET /api/eebus/wallbox` und `POST /api/eebus/wallbox/limit` sowie eine minimale
+HTML/JS-Seite unter `/` (`wwwroot/index.html`) — keine eigene CLI, da die REST-Schnittstelle beides
+(Dashboard und künftige CLI) bedient.
+
+**Ungeklärt**: beim ersten Testlauf am 2026-08-31 brach die WebSocket-Verbindung zur Wallbox sofort
+nach dem Connect ab (reproduziert auch mit dem unveränderten Milestone-1-Codestand, siehe ADR-0001
+"Offene Punkte") — echte Live-Daten im Dashboard sind daher noch nicht verifiziert.
+
 ## Konfiguration
 
-- `EMS_EEBUS_CERT_DIR` (Umgebungsvariable, **nicht** in `appsettings.json`): Verzeichnis mit
-  `{Certificate}.pfx` (Passwort `xcenter`, siehe ADR) und der `trusted-skis.json`. Aktuell:
-  `C:\Users\mail\OneDrive - HSOS\certificates`.
+- `Eebus:BasePath` (in `appsettings.Local.json`, **nicht** im committeten `appsettings.json` — per
+  `.gitignore` ausgeschlossen): Verzeichnis mit `{Certificate}.pfx` (Passwort `xcenter`, siehe ADR)
+  und der `trusted-skis.json`. Aktuell: `C:\Users\mail\OneDrive - HSOS\certificates`. Bis
+  2026-08-31 war das stattdessen die Umgebungsvariable `EMS_EEBUS_CERT_DIR` — die hat jetzt keine
+  Wirkung mehr.
 - `appsettings.json` in `EmsAtHome.Host` enthält nur unkritische Defaults (Port, Gerätename) —
   keine Geheimnisse.
 

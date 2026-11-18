@@ -2,3 +2,8 @@ bin/
 obj/
 *.user
 .vs/
+secrets.md
+appsettings.Local.json
+
+# EEBus specifications (copyright EEBus Initiative) and private charging data: local only
+specs/

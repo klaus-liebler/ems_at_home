@@ -1,0 +1,998 @@
+openapi: 3.0.3
+info:
+  title: Elli Wallbox Local REST API (reverse-engineered, unofficial)
+  version: "1.24.1"
+  description: |
+    Undocumented local REST API served by an Elli Wallbox Pro/Connect 2's own web UI
+    (bundleVersion "R04.004.045.303-elli", WLWB_WebApplication 1.24.0, WebAccessShared 1.24.1).
+    Reconstructed from a HAR capture of the device's own web UI plus community reverse-engineering
+    (see Design/devices/elli-wallbox-rest-api.md for sources and full narrative). There is no
+    official specification - this document WILL be incomplete and MAY drift from reality on other
+    firmware versions. All concrete secret-looking values observed during capture (hotspot
+    password, Wi-Fi SSID, MAC/IP addresses, a technician login attempt, an OCPP registry path)
+    were redacted; only field shapes are documented.
+  contact:
+    name: EmsAtHome project (internal notes)
+externalDocs:
+  description: Human-readable companion document with narrative, sources, and open questions
+  url: ./elli-wallbox-rest-api.md
+servers:
+  - url: "https://{host}"
+    description: >-
+      Self-signed TLS (nginx). Observed mDNS hostname pattern: wallbox-<serialNumber>.fritz.box
+      (Fritz!Box specific). A client must accept/pin the self-signed certificate.
+    variables:
+      host:
+        default: wallbox-00000000.fritz.box
+
+security: []  # Every endpoint captured in the HAR answered without auth; see technicianAuth below
+              # for the one (unverified) exception.
+
+tags:
+  - name: charging
+  - name: dashboard
+  - name: system
+  - name: connection
+  - name: vehicles
+  - name: events
+  - name: auth
+  - name: allow-list
+
+paths:
+  # ---------------------------------------------------------------- charging
+  /api/v2/charging/state:
+    get:
+      tags: [charging]
+      summary: Current charging state
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  value:
+                    type: string
+                    description: Observed value "ChargingComplete"; likely enum (idle/charging/complete/error/...), full set unconfirmed.
+                    example: ChargingComplete
+
+  /api/v2/charging/limits:
+    get:
+      tags: [charging]
+      summary: Currently effective charging limits
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  maxCurrent: { type: number, description: "Amperes", example: 16 }
+                  maxPower: { type: number, description: "Watts, 0 = no power limit set", example: 0 }
+
+  /api/v2/charging/user-limit-current:
+    get:
+      tags: [charging]
+      summary: User-configured current limit
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  value: { type: number, description: Amperes, example: 16 }
+
+  /api/v2/charging/free-charging:
+    get:
+      tags: [charging]
+      summary: Whether charging without authorization is allowed
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EnabledFlag" }
+
+  /api/v2/charging/restrictions:
+    get:
+      tags: [charging]
+      summary: Active charging restrictions
+      responses:
+        "200":
+          description: OK (empty array observed - shape of a non-empty entry is unconfirmed)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: object }
+
+  /api/v2/charging/pvoptimization/mode:
+    get:
+      tags: [charging]
+      summary: PV surplus charging mode
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  value: { type: string, description: "Observed \"noPV\"; other values unconfirmed", example: noPV }
+
+  /api/v2/charging/max-current-per-phase/required:
+    get:
+      tags: [charging]
+      summary: Whether a per-phase max-current setting is required for this installation
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RequiredFlag" }
+
+  /api/v2/charging/max-current-per-phase:
+    get:
+      tags: [charging]
+      summary: Configured max current per phase (documented by community sources, not captured in our HAR)
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: object } } } }
+    x-source: community
+    x-verified: false
+
+  /api/v2/charging/max-current-per-phase/selected:
+    get:
+      tags: [charging]
+      summary: Selected max-current-per-phase option (documented by community sources, not captured in our HAR)
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: object } } } }
+    x-source: community
+    x-verified: false
+
+  /api/v2/charging/phase-type/required:
+    get:
+      tags: [charging]
+      summary: Whether a phase-type setting is required for this installation
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RequiredFlag" }
+
+  /api/v2/charging/phase-type:
+    get:
+      tags: [charging]
+      summary: Phase type options (documented by community sources, not captured in our HAR)
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: object } } } }
+    x-source: community
+    x-verified: false
+
+  /api/v2/charging/phase-type/selected:
+    get:
+      tags: [charging]
+      summary: Selected phase type (documented by community sources, not captured in our HAR)
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: object } } } }
+    x-source: community
+    x-verified: false
+
+  /api/v2/charging/last-started-session:
+    get:
+      tags: [charging]
+      summary: Details of the current/most recently started charging session
+      description: >-
+        Single object, NOT a history. For a real full history, use
+        GET /api/v2/charging/statistic instead.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CurrentSession" }
+
+  /api/v2/charging/lifetime-stats:
+    get:
+      tags: [charging]
+      summary: Lifetime totals across all charging sessions
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  totalChargingTime: { type: integer, description: Seconds, example: 8490 }
+                  totalEnergy:
+                    type: integer
+                    description: >-
+                      Watt-hours. Observed as 0 on a device whose system/energy-meter reports
+                      status "notEquipped" (no calibrated meter chip) - likely stays 0 on such
+                      devices regardless of actual charging that happened.
+                    example: 0
+
+  /api/v2/charging/statistic:
+    get:
+      tags: [charging]
+      summary: "★ Full charging session history (the endpoint this doc set out to find)"
+      description: >-
+        Array with one entry per past charging session (not just the latest). Includes per-session
+        energy consumption and meter start/end readings. No query parameters were observed being
+        used in our capture; whether it supports date-range filtering or pagination is unconfirmed.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/StatisticSession" }
+
+  /api/v2/charging/statistic/export:
+    get:
+      tags: [charging]
+      summary: Same session history as a CSV download
+      responses:
+        "200":
+          description: >-
+            CSV, semicolon-separated. Header row:
+            SessionID;StartDateTime;MeterStart(kWh);MeterEnd(kWh);EnergyConsumption(Wh);Duration(s);
+            AuthorizationCause;AuthorizationToken;VehicleBrand;VehicleModel;VehicleName;ChargingCost
+          content:
+            text/plain:
+              schema: { type: string }
+
+  # ------------------------------------------------------------- allow-list
+  /api/v2/allow-list/export:
+    get:
+      tags: [allow-list]
+      summary: Export of the RFID/authorization allow-list (path found via WebUI JS search only)
+      description: >-
+        Path string found by full-text search of the wallbox's minified WebUI JavaScript bundle,
+        not observed in our own HAR capture - no request/response was recorded, method beyond a
+        plausible GET is unconfirmed. Suggests a base resource /api/v2/allow-list (list/manage
+        authorized RFID cards or users) also exists, though that exact string was not found.
+      responses:
+        "200": { description: "Presumed - UNVERIFIED" }
+      x-source: webui-js-search
+      x-verified: false
+
+  # --------------------------------------------------------------- dashboard
+  /api/v2/dashboard/charging-curve:
+    get:
+      tags: [dashboard]
+      summary: Time series of per-phase power/limits for the dashboard live chart
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  curvePoints:
+                    type: array
+                    items: { $ref: "#/components/schemas/ChargingCurvePoint" }
+
+  # ------------------------------------------------------------------ system
+  /api/v2/system/electronic-typeplate:
+    get:
+      tags: [system]
+      summary: Device nameplate (brand, serial, firmware/hardware versions)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  brand: { type: string, example: Elli }
+                  bundleVersion: { type: string, example: R04.004.045.303-elli }
+                  commControllerSoftwareVersion: { type: string, example: C0152_0_152_20 }
+                  hardwareVersion: { type: string, example: "0304" }
+                  partNumber: { type: string, example: "139915003C" }
+                  powerControllerSoftwareVersion: { type: string, example: P3228 }
+                  serialNumber: { type: string, example: "00000000" }
+
+  /api/v2/system/device-state:
+    get:
+      tags: [system]
+      summary: Runtime/OS state
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  availableRom: { type: integer }
+                  elapsedTimeSinceStart: { type: integer, description: Seconds since boot }
+                  systemState: { type: string, description: "Observed \"1\" - meaning unconfirmed" }
+                  usedRom: { type: integer }
+
+  /api/v2/system/device-temperatures:
+    get:
+      tags: [system]
+      summary: Internal temperature sensors, degrees Celsius
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  communicationControllerTemperature: { type: number }
+                  eMmcTemperature: { type: number }
+                  inputPathTemperature: { type: number }
+                  outputPathTemperature: { type: number }
+                  powerControllerTemperature: { type: number }
+                  relayTemperature: { type: number }
+
+  /api/v2/system/errors:
+    get:
+      tags: [system]
+      summary: Active/past device error codes
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    category: { type: string, example: nonCritical }
+                    dtc: { type: string, description: "Diagnostic trouble code", example: "0x401027" }
+                    status: { type: string, example: passive }
+                    timestamp: { type: string, format: date-time }
+
+  /api/v2/system/errors/export:
+    get:
+      tags: [system]
+      summary: Error log as CSV (path found via WebUI JS search only, presumed analogous to charging/statistic/export)
+      responses:
+        "200": { description: "Presumed CSV - UNVERIFIED", content: { text/plain: { schema: { type: string } } } }
+      x-source: webui-js-search
+      x-verified: false
+
+  /api/v2/system/password/:
+    get:
+      tags: [system]
+      summary: Device/admin password management (path found via WebUI JS search only)
+      description: >-
+        The trailing slash in the found path string suggests string concatenation with a dynamic
+        segment in the actual frontend code (e.g. .../password/<action>) - exact path, method and
+        payload are unconfirmed.
+      responses:
+        "200": { description: "UNVERIFIED" }
+      x-source: webui-js-search
+      x-verified: false
+
+  /api/v2/system/user-config/import:
+    post:
+      tags: [system]
+      summary: Restore a full device configuration backup (path found via WebUI JS search only)
+      responses:
+        "200": { description: "Presumed - UNVERIFIED" }
+      x-source: webui-js-search
+      x-verified: false
+
+  /api/v2/system/user-config/export:
+    get:
+      tags: [system]
+      summary: Full device configuration backup (path found via WebUI JS search only)
+      responses:
+        "200": { description: "Presumed - UNVERIFIED" }
+      x-source: webui-js-search
+      x-verified: false
+
+  /api/v2/system/energy-meter:
+    get:
+      tags: [system]
+      summary: Calibrated ("eichrechtskonform") energy meter status
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  calibrationDate: { type: string, format: date-time }
+                  energyAmount: { type: integer, description: "-1 when notEquipped" }
+                  hardwareVersion: { type: string }
+                  manufacturer: { type: string }
+                  operatingHours: { type: integer }
+                  serialNumber: { type: string }
+                  status:
+                    type: string
+                    description: Observed "notEquipped" (no calibrated meter chip installed)
+                    example: notEquipped
+
+  /api/v2/system/grid-related-information:
+    get:
+      tags: [system]
+      summary: Grid connection parameters
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  gridType: { type: string, example: threePhase }
+                  maximumCurrentCapability: { type: number, example: 16 }
+                  minimumCurrentCapability: { type: number, example: 6 }
+                  normDomain: { type: string, example: iec }
+
+  /api/v2/system/ground-monitoring:
+    get:
+      tags: [system]
+      summary: Ground/earth monitoring enabled state
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/EnabledFlag" } } } }
+
+  /api/v2/system/ground-monitoring/available:
+    get:
+      tags: [system]
+      summary: Whether ground monitoring is available on this hardware
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/AvailableFlag" } } } }
+
+  /api/v2/system/relais-switch/enabled:
+    get:
+      tags: [system]
+      summary: Whether phase (relay) switching is available
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/EnabledFlag" } } } }
+
+  /api/v2/system/relais-switch/state:
+    get:
+      tags: [system]
+      summary: Current 1-phase/3-phase relay state
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  currentState: { type: string, enum: [onePhase, threePhase] }
+                  limitationReason: { type: string, description: "Empty when unrestricted" }
+                  mode: { type: string, example: automatic }
+                  value: { type: string, enum: [onePhase, threePhase] }
+    put:
+      tags: [system]
+      summary: Switch between 1-phase and 3-phase charging
+      description: Succeeded without authentication in our capture; community docs describe firmware minimum R04.004.045.303.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                value: { type: string, enum: [onePhase, threePhase] }
+      responses:
+        "200": { description: "OK (empty body)" }
+        "422": { description: "Observed by community docs during an in-progress switch - poll GET state instead of trusting the status code" }
+
+  /api/v2/system/led/luminosity:
+    get:
+      tags: [system]
+      summary: Status LED brightness (0-100)
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: object, properties: { value: { type: integer, minimum: 0, maximum: 100, example: 50 } } } } } }
+    put:
+      tags: [system]
+      summary: Set status LED brightness
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, properties: { value: { type: integer, minimum: 0, maximum: 100 } } }
+      responses:
+        "200": { description: "OK (empty body)" }
+
+  /api/v2/system/led/automatic-luminosity-enabled:
+    get:
+      tags: [system]
+      summary: Whether the LED brightness auto-adjusts
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/EnabledFlag" } } } }
+    put:
+      tags: [system]
+      summary: Enable/disable automatic LED brightness
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EnabledFlag" }
+      responses:
+        "200": { description: "OK (empty body)" }
+
+  /api/v2/system/certificates:
+    get:
+      tags: [system]
+      summary: OCPP root CA certificate(s), decoded
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ocpp:
+                    type: object
+                    properties:
+                      rootCA:
+                        type: object
+                        properties:
+                          decoded: { type: string, description: "openssl-style human-readable certificate dump" }
+
+  /api/v2/system/date-time:
+    get:
+      tags: [system]
+      summary: Current device date/time
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dateTime: { type: string, format: date-time }
+                  timeOffsetFromUtc: { type: string, example: "+02:00" }
+
+  /api/v2/system/date-time/date-format:
+    get:
+      tags: [system]
+      summary: UI date format preference
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: object, properties: { value: { type: string, example: YYMMDD } } } } } }
+
+  /api/v2/system/date-time/time-sources/selected:
+    get:
+      tags: [system]
+      summary: Selected time source
+      responses:
+        "200": { description: "OK - observed value \"ocpp\" (time comes from the OCPP backend)", content: { application/json: { schema: { type: object, properties: { value: { type: string, example: ocpp } } } } } }
+
+  /api/v2/system/enable-calibration-law/available:
+    get: { tags: [system], summary: "Feature flag (calibration law mode)", responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/AvailableFlag" } } } } } }
+
+  /api/v2/system/energy-saving:
+    get: { tags: [system], summary: "Energy-saving mode enabled state", responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/EnabledFlag" } } } } } }
+
+  /api/v2/system/energy-saving/available:
+    get: { tags: [system], summary: "Whether energy-saving mode is available", responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/AvailableFlag" } } } } } }
+
+  /api/v2/system/energy-management/enabled:
+    get: { tags: [system], summary: "Whether local energy management (e.g. PV optimization) is enabled", responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/EnabledFlag" } } } } } }
+
+  /api/v2/system/v2g/grid-regulations/available:
+    get: { tags: [system], summary: "Vehicle-to-Grid availability", responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/AvailableFlag" } } } } } }
+
+  /api/v2/system/v2g/grid-regulations/settings:
+    get: { tags: [system], summary: "Vehicle-to-Grid settings (empty object observed - not available on this device)", responses: { "200": { description: OK, content: { application/json: { schema: { type: object } } } } } }
+
+  /api/v2/system/onboarding:
+    get: { tags: [system], summary: "Whether first-time setup is finished", responses: { "200": { description: OK, content: { application/json: { schema: { type: object, properties: { finished: { type: boolean } } } } } } } }
+
+  /api/v2/system/languages/selected:
+    get: { tags: [system], summary: "Selected UI language", responses: { "200": { description: OK, content: { application/json: { schema: { type: object, properties: { languageCode: { type: string, example: de } } } } } } } }
+
+  /api/v2/system/countries/selected:
+    get: { tags: [system], summary: "Selected country", responses: { "200": { description: OK, content: { application/json: { schema: { type: object, properties: { countryCode: { type: string, example: DE } } } } } } } }
+
+  /api/v2/system/distance-units/selected:
+    get: { tags: [system], summary: "Selected distance unit", responses: { "200": { description: OK, content: { application/json: { schema: { type: object, properties: { value: { type: string, example: kilometer } } } } } } } }
+
+  /api/v2/system/temperature-units/selected:
+    get: { tags: [system], summary: "Selected temperature unit", responses: { "200": { description: OK, content: { application/json: { schema: { type: object, properties: { value: { type: string, example: celsiusDegree } } } } } } } }
+
+  /api/v2/system/target-soc-time-units/selected:
+    get: { tags: [system], summary: "Selected time unit for target-SOC display", responses: { "200": { description: OK, content: { application/json: { schema: { type: object, properties: { value: { type: string, example: absolute } } } } } } } }
+
+  /api/v2/system/update/info:
+    get: { tags: [system], summary: "Firmware update status (empty object observed - up to date)", responses: { "200": { description: OK, content: { application/json: { schema: { type: object } } } } } }
+
+  /api/v2/system/heart-beat:
+    put:
+      tags: [system]
+      summary: Session keepalive, called periodically by the web UI
+      requestBody:
+        required: false
+        content:
+          text/plain:
+            schema: { type: string, description: "Observed literal body \"undefined\" - likely a frontend bug, harmless" }
+      responses:
+        "200": { description: "OK (empty body)" }
+
+  # -------------------------------------------------------------- connection
+  /api/v2/connection/eebus:
+    get:
+      tags: [connection]
+      summary: This device's own EEBUS/SHIP identity
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name: { type: string, example: Elli-Wallbox-00000000 }
+                  ski: { type: string, description: "40-char hex SHIP SKI" }
+
+  /api/v2/connection/eebus/available:
+    get:
+      tags: [connection]
+      summary: EEBUS/CEM partners discovered via mDNS on the local network
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name: { type: string }
+                    ski: { type: string }
+
+  /api/v2/connection/eebus/paired:
+    get:
+      tags: [connection]
+      summary: Currently paired EEBUS partners and their connection status
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    connected: { type: boolean }
+                    name: { type: string }
+                    ski: { type: string }
+
+  /api/v2/connection/ethernet/connected:
+    get: { tags: [connection], summary: "Ethernet link status", responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ConnectedFlag" } } } } } }
+
+  /api/v2/connection/network/connected:
+    get: { tags: [connection], summary: "Overall network connectivity", responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ConnectedFlag" } } } } } }
+
+  /api/v2/connection/wlan/enabled:
+    get: { tags: [connection], summary: "Whether the WLAN client radio is enabled", responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/EnabledFlag" } } } } } }
+
+  /api/v2/connection/wlan-client/connected:
+    get:
+      tags: [connection]
+      summary: WLAN client connection details
+      description: Contains SSID/IP/MAC/signal strength of the wallbox's own home-network connection - treat as sensitive.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dhcpActive: { type: boolean }
+                  dnsServerAddress: { type: string, format: ipv4 }
+                  ipV4: { type: string, format: ipv4 }
+                  ipV4GatewayAddress: { type: string, format: ipv4 }
+                  ipV4Subnetmask: { type: string }
+                  ipV6: { type: string }
+                  ipV6GatewayAddress: { type: string }
+                  ipV6PrefixLength: { type: string }
+                  macAddress: { type: string }
+                  signalStrength: { type: integer, description: dBm }
+                  ssid: { type: string }
+
+  /api/v2/connection/wlan-client/available:
+    get:
+      tags: [connection]
+      summary: Available WLAN networks (scan result)
+      description: >-
+        Observed HTTP 202 with an HTML error body in our capture ("An error has occurred while
+        trying to display the requested resource") - likely returns this while no scan is running
+        yet; exact success shape unconfirmed.
+      responses:
+        "202": { description: Scan pending/unavailable }
+        "200": { description: "Presumed success shape - unconfirmed", content: { application/json: { schema: { type: array, items: { type: object } } } } }
+
+  /api/v2/connection/hotspot:
+    get:
+      tags: [connection]
+      summary: The wallbox's own WLAN access point (for initial setup)
+      description: Response contains the hotspot password in plaintext - treat as a secret.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  encryption: { type: string, example: wpa2 }
+                  password: { type: string, description: "Plaintext WPA2 passphrase - secret" }
+                  ssid: { type: string }
+
+  /api/v2/connection/hotspot/enabled:
+    get: { tags: [connection], summary: "Whether the hotspot is enabled", responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/EnabledFlag" } } } } } }
+
+  /api/v2/connection/lte/connected:
+    get: { tags: [connection], summary: "LTE connection status", responses: { "204": { description: "No content - observed on a device without an LTE module" }, "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ConnectedFlag" } } } } } }
+
+  /api/v2/connection/lte/status:
+    get: { tags: [connection], summary: "LTE module status", responses: { "200": { description: "OK - observed \"notEquipped\"", content: { application/json: { schema: { type: object, properties: { status: { type: string, example: notEquipped } } } } } } } }
+
+  /api/v2/connection/lte/enabled:
+    get: { tags: [connection], summary: "Whether LTE is enabled", responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/EnabledFlag" } } } } } }
+
+  /api/v2/connection/lte/connect:
+    get: { tags: [connection], summary: "LTE APN connection settings", responses: { "200": { description: OK, content: { application/json: { schema: { type: object, properties: { apnName: { type: string }, apnUsername: { type: string }, password: { type: string } } } } } } } }
+
+  /api/v2/connection/lte/access-data:
+    get: { tags: [connection], summary: "LTE access data (SIM etc.)", responses: { "204": { description: "No content - observed on a device without an LTE module" } } }
+
+  /api/v2/connection/lte/network-connections/available:
+    get: { tags: [connection], summary: "Available LTE carrier networks", responses: { "204": { description: "No content - observed on a device without an LTE module" } } }
+
+  /api/v2/connection/lte/network-connections/selected:
+    get: { tags: [connection], summary: "Selected LTE carrier network", responses: { "204": { description: "No content - observed on a device without an LTE module" } } }
+
+  /api/v2/connection/lte/network-type:
+    get: { tags: [connection], summary: "LTE network type (2G/3G/4G)", responses: { "204": { description: "No content - observed on a device without an LTE module" } } }
+
+  /api/v2/connection/lte/auto-network-connections/enabled:
+    get: { tags: [connection], summary: "Whether automatic LTE network selection is enabled", responses: { "204": { description: "No content - observed on a device without an LTE module" } } }
+
+  /api/v2/connection/modbus/enabled:
+    get: { tags: [connection], summary: "Whether the Modbus interface is enabled", responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/EnabledFlag" } } } } } }
+
+  /api/v2/connection/plc/enabled:
+    get: { tags: [connection], summary: "Whether Powerline Communication is enabled", responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/EnabledFlag" } } } } } }
+
+  /api/v2/connection/ocpp:
+    get:
+      tags: [connection]
+      summary: OCPP backend connection details
+      description: backendUrl contains a registry-specific path segment - treat as sensitive/device-identifying.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  backendOcppVersion: { type: string, example: "2.0.1" }
+                  backendPort: { type: integer, example: 443 }
+                  backendTlsEnabled: { type: boolean }
+                  backendUrl: { type: string, format: uri, description: "wss:// URL to the OCPP backend, includes a per-device registry token" }
+                  backendUsername: { type: string }
+                  chargePointId: { type: string }
+                  evseId: { type: string }
+
+  /api/v2/connection/ocpp/enabled:
+    get: { tags: [connection], summary: "Whether OCPP is enabled", responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/EnabledFlag" } } } } } }
+
+  /api/v2/connection/ocpp/connected:
+    get: { tags: [connection], summary: "Whether the OCPP backend connection is currently up", responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/ConnectedFlag" } } } } } }
+
+  /api/v2/connection/ocpp/remote-start-charging-enabled:
+    get: { tags: [connection], summary: "Whether the OCPP backend may remote-start charging", responses: { "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/EnabledFlag" } } } } } }
+
+  /api/v2/connection/ocpp/standard-versions:
+    get:
+      tags: [connection]
+      summary: Supported OCPP protocol versions
+      responses:
+        "200":
+          description: OK
+          content:
+            text/plain:
+              schema: { type: string, description: "JSON array as text, e.g. [\"1.6\",\"2.0.1\"]" }
+
+  /api/v2/connection/ocpp/vehicle-connection-timeout:
+    get: { tags: [connection], summary: "Timeout (seconds) for a vehicle to connect after authorization", responses: { "200": { description: OK, content: { application/json: { schema: { type: object, properties: { timeout: { type: integer, example: 60 } } } } } } } }
+
+  # --------------------------------------------------------------- vehicles
+  /api/v2/vehicles/plugged:
+    get:
+      tags: [vehicles]
+      summary: Whether a vehicle is currently plugged in
+      description: >-
+        Observed HTTP 204 (No Content) with no body when nothing was plugged in. The plugged-in
+        success shape (status code and/or body) is unconfirmed - possibly conveyed via the HTTP
+        status alone (e.g. 200 vs 204) or via the /api/v2/events stream instead.
+      responses:
+        "204": { description: "Not plugged in (observed)" }
+
+  # ----------------------------------------------------------------- events
+  /api/v2/events:
+    get:
+      tags: [events]
+      summary: Server-Sent Events stream
+      description: >-
+        text/event-stream; presumably pushes live updates for the values documented elsewhere in
+        this spec (state changes, charging-curve points, etc). Stream content was not captured in
+        our HAR (recording stopped before events arrived) - event names/payload shapes unconfirmed.
+      responses:
+        "200":
+          description: OK, connection kept open
+          content:
+            text/event-stream:
+              schema: { type: string }
+
+  # ------------------------------------------------------------------- auth
+  /api/v2/jwt/login:
+    post:
+      tags: [auth]
+      summary: Elevated ("technician") login
+      description: >-
+        Not required for any GET or PUT endpoint observed in our capture (all succeeded
+        unauthenticated). Purpose and scope of this elevated session are unconfirmed - possibly
+        service/factory functions only. Success response shape (JWT bearer token) is UNVERIFIED;
+        documented here only from community sources.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                user: { type: string, example: technician }
+                pass: { type: string, format: password }
+              required: [user, pass]
+      responses:
+        "401":
+          description: "Observed on wrong credentials"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  attempt: { type: integer, example: 1 }
+                  maxAttempts: { type: integer, example: 5 }
+        "200":
+          description: "Presumed success - UNVERIFIED, shape guessed from community sources"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string, description: "JWT, used as Authorization: Bearer <token> on subsequent requests - unverified" }
+      x-verified: false
+
+  /api/v2/jwt/logout:
+    post:
+      tags: [auth]
+      summary: End the technician session (path found via WebUI JS search only)
+      responses:
+        "200": { description: "Presumed - UNVERIFIED" }
+      x-source: webui-js-search
+      x-verified: false
+
+  /api/v2/jwt/login/attempt-status:
+    get:
+      tags: [auth]
+      summary: Current login/lockout status
+      responses:
+        "401":
+          description: "Observed when not authenticated"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string, example: "missing JWT token or Authorization header" }
+
+components:
+  securitySchemes:
+    technicianAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Obtained via POST /api/v2/jwt/login. Not required for any endpoint verified in this document - see x-verified:false markers.
+
+  schemas:
+    EnabledFlag:
+      type: object
+      properties:
+        enabled: { type: boolean }
+
+    AvailableFlag:
+      type: object
+      properties:
+        available: { type: boolean }
+
+    RequiredFlag:
+      type: object
+      properties:
+        required: { type: boolean }
+
+    ConnectedFlag:
+      type: object
+      properties:
+        connected: { type: boolean }
+
+    CurrentSession:
+      type: object
+      description: Shape of GET /api/v2/charging/last-started-session
+      properties:
+        authorizationCause: { type: string, example: Backend }
+        brand: { type: string, description: Vehicle brand, may be empty }
+        chargingCost:
+          type: object
+          properties:
+            unit: { type: string, example: Euro }
+            value: { type: number }
+        chargingRate: { type: number }
+        energyConsumption: { type: integer, description: Watt-hours consumed so far in this session }
+        estimatedFinishingTime: { type: string, format: date-time }
+        latestSOC: { type: integer, description: "Percent, -1 if unknown/not reported by vehicle" }
+        model: { type: string, description: Vehicle model, may be empty }
+        name: { type: string, description: Vehicle name, may be empty }
+        range: { type: integer }
+        remainingTime: { type: string, description: "HH:MM:SS" }
+        solarEnergyShare:
+          type: object
+          properties:
+            inPercent: { type: number }
+        startDateTime: { type: string, format: date-time }
+        targetSOC: { type: integer }
+        vehicleUri: { type: string }
+
+    StatisticSession:
+      type: object
+      description: One entry of GET /api/v2/charging/statistic - the actual history endpoint
+      properties:
+        id: { type: string, description: Session ID }
+        startDateTime: { type: string, format: date-time }
+        duration: { type: string, description: "HH:MM:SS" }
+        energyConsumption: { type: integer, description: Watt-hours }
+        meterStart: { type: number, description: kWh; likely an estimate on devices without a calibrated meter (see system/energy-meter) }
+        meterEnd: { type: number, description: kWh; same caveat as meterStart }
+        authorizationCause: { type: string }
+        authorizationToken: { type: string }
+        brand: { type: string, description: Vehicle brand, may be empty }
+        model: { type: string, description: Vehicle model, may be empty }
+        name: { type: string, description: Vehicle name, may be empty }
+
+    ChargingCurvePoint:
+      type: object
+      properties:
+        timestamp: { type: string, format: date-time }
+        sessionId: { type: integer, description: "Correlates to StatisticSession.id / CurrentSession" }
+        powerL1: { type: number, description: kW }
+        powerL2: { type: number, description: kW }
+        powerL3: { type: number, description: kW }
+        powerLimitL1: { type: number, description: kW }
+        powerLimitL2: { type: number, description: kW }
+        powerLimitL3: { type: number, description: kW }
+        powerLimitReasonL1: { type: string, example: ICCPD_HW }
+        powerLimitReasonL2: { type: string, example: ICCPD_HW }
+        powerLimitReasonL3: { type: string, example: ICCPD_HW }
+        availableSelfGeneratedPower: { type: number, description: "kW, PV surplus available" }
+        currentEnergyCost: { type: number }

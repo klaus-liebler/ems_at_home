@@ -8,10 +8,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\EmsAtHome.Abstractions\EmsAtHome.Abstractions.csproj" />
+    <!-- Vendored EEBUS.Net (src/vendor/EEBUS.Net, fresh fork of kermigmbh/EEBUS.Net 1.0.30,
+         2026-09-02 restart) - not the NuGet package, not the earlier out-of-repo fork.
+         See Design/decisions/0003-eebus-net-fork-and-cli-restart.md. -->
+    <ProjectReference Include="..\vendor\EEBUS.Net\EEBUS.Net.csproj" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="EEBUS.Net" Version="1.0.30" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.11" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.11" />
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.11" />

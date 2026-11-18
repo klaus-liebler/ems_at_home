@@ -1,0 +1,126 @@
+﻿using EEBUS.Models;
+using EEBUS.SPINE.Commands;
+using EEBUS.UseCases.ControllableSystem;
+
+namespace EEBUS
+{
+    public class Settings
+    {
+        public string Certificate { get; set; }
+        public string BasePath { get; set; } = string.Empty;
+        public DeviceSettings Device { get; set; }
+        public bool UseStrictShipPairing { get; set; } = false;
+    }
+
+    public class DeviceSettings
+    {
+        public string Name { get; set; }
+        public string Id { get; set; }
+        public string Model { get; set; }
+        public string Brand { get; set; }
+        public string Type { get; set; }
+        public string Serial { get; set; }
+        public string Host { get; set; }
+        public ushort Port { get; set; }
+        public string Secret { get; set; }
+        public string NetworkFeatureSet { get; set; }
+
+        public EntitySettings[] Entities { get; set; } = [];
+
+        public long GetConsumptionNominalMax()
+        {
+            try
+            {
+                foreach (var entity in Entities)
+                {
+                    var usecase = entity.UseCases.FirstOrDefault(uc => uc.Type == "limitationOfPowerConsumption" && uc.Actor == "ControllableSystem");
+                    if (null != usecase)
+                        return usecase.InitLimits.NominalMax;
+                }
+            }
+            catch
+            {
+            }
+
+            return 0;
+        }
+
+        public long GetProductionNominalMax()
+        {
+            try
+            {
+                foreach (var entity in Entities)
+                {
+                    var usecase = entity.UseCases.FirstOrDefault(uc => uc.Type == "limitationOfPowerProduction" && uc.Actor == "ControllableSystem");
+                    if (null != usecase)
+                        return usecase.InitLimits.NominalMax;
+                }
+            }
+            catch
+            {
+            }
+
+            return 0;
+        }
+    }
+
+    public class EntitySettings
+    {
+        public string Type { get; set; }
+
+        public UseCaseSettings[] UseCases { get; set; } = [];
+    }
+
+    public class UseCaseSettings
+    {
+        public string Type { get; set; } = string.Empty;
+        public string Actor { get; set; } = string.Empty;
+        public LimitSettings? InitLimits { get; set; }
+        public MeasurementSettings? InitMeasurements { get; set; }
+        public int? PvCurtailmentLimitFactor { get; set; }
+        public IEnumerable<uint>? SupportedScenarios { get; set; }
+
+        public static UseCaseSettings? Create(string actor, UseCaseSupportType useCaseSupport)
+        {
+            if (!useCaseSupport.useCaseAvailable) return null;
+
+            return new UseCaseSettings
+            {
+                Type = useCaseSupport.useCaseName,
+                Actor = actor,
+                InitLimits = null,
+                PvCurtailmentLimitFactor = null,
+                SupportedScenarios = useCaseSupport.scenarioSupport
+            };
+        }
+    }
+
+    public class LimitSettings
+    {
+        public bool Active { get; set; }
+        public long Limit { get; set; }
+        public TimeSpan Duration { get; set; }
+        public long FailsafeLimit { get; set; }
+        public TimeSpan FailsafeDurationMinimum { get; set; }
+        public long NominalMax { get; set; }
+    }
+
+    public class MeasurementSettings
+    {
+        public long AcPowerTotal { get; set; }
+        public long GridFeedIn { get; set; }
+        public long GridConsumption { get; set; }
+        public long AcPowerPhaseA { get; set; }
+        public long AcPowerPhaseB { get; set; }
+        public long AcPowerPhaseC { get; set; }
+        public long AcEnergyConsumed { get; set; }
+        public long AcEnergyProduced { get; set; }
+        public long AcCurrentPhaseA { get; set; }
+        public long AcCurrentPhaseB { get; set; }
+        public long AcCurrentPhaseC { get; set; }
+        public long AcVoltagePhaseA { get; set; }
+        public long AcVoltagePhaseB { get; set; }
+        public long AcVoltagePhaseC { get; set; }
+        public long AcFrequency { get; set; }
+    }
+}

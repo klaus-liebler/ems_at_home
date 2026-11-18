@@ -1,0 +1,8 @@
+{
+  "Eebus": {
+    "BasePath": "C:/path/to/a/cert/directory/outside/the/repo",
+    "TrustedSkis": [
+      "0000000000000000000000000000000000000000"
+    ]
+  }
+}

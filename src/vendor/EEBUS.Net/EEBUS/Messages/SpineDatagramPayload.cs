@@ -1,0 +1,219 @@
+﻿using EEBUS.SPINE.Commands;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
+
+using EEBUS.UseCases;
+
+namespace EEBUS.Messages
+{
+	public class SpineDatagramPayload
+	{
+		public SpineDatagramPayload()
+		{
+		}
+
+		public DatagramType datagram { get; set; } = new();
+
+		private string GetAnswerCmdClassifier()
+		{
+			switch ( this.datagram.header.cmdClassifier )
+			{
+				case "read":
+					return "reply";
+				case "call":
+					return "result";
+				case "notify":
+					return "";
+				case "write":
+					return "result";
+				default:
+					return null;
+			}
+		}
+
+		private SpineCmdPayloadBase.Class? GetClass()
+		{
+			// payload is a JsonNode representing the datagram body
+			if (this.datagram.payload is not JsonObject payloadObj)
+				return null;
+			if (!payloadObj.TryGetPropertyValue("cmd", out JsonNode? cmdsNode))
+				return null;
+			if (cmdsNode is not JsonArray cmdsArray || cmdsArray.Count == 0)
+				return null;
+
+			if (cmdsArray[0] is not JsonObject cmdObj)
+				return null;
+
+			// take first property of the command object
+			var prop = cmdObj.FirstOrDefault();
+			if (prop.Equals(default(KeyValuePair<string, JsonNode?>)))
+				return null;
+
+			string command = prop.Key;
+			if (command == "function" && prop.Value is JsonValue v && v.TryGetValue<string>(out var fn))
+				command = fn;
+
+			SpineCmdPayloadBase.Class? cls = SpineCmdPayloadBase.GetClass( command );
+			if ( null == cls )
+				return null;
+
+			return cls;
+		}
+
+		public async ValueTask<SpineDatagramPayload?> CreateAnswerAsync( ulong counter, Connection connection )
+		{
+			SpineCmdPayloadBase.Class? cls = GetClass();
+			if ( null == cls )
+				return null;
+
+			SpineDatagramPayload reply = new SpineDatagramPayload();
+			reply.datagram.header.addressSource		   = this.datagram.header.addressDestination;
+			reply.datagram.header.addressSource.device = connection.Local.DeviceId;
+			reply.datagram.header.addressDestination   = this.datagram.header.addressSource;
+			reply.datagram.header.msgCounter		   = counter;
+			reply.datagram.header.msgCounterReference  = this.datagram.header.msgCounter;
+			reply.datagram.header.cmdClassifier		   = GetAnswerCmdClassifier();
+			reply.datagram.header.ackRequest		   = cls.GetAnswerAckRequest();
+
+			SpineCmdPayloadBase? payload = await cls.CreateAnswerAsync( this.datagram, reply.datagram.header, connection );
+			if ( null == payload )
+				return null;
+
+			reply.datagram.payload = payload.ToJsonNode();
+
+			return reply;
+		}
+        public SpineCmdPayloadBase? DeserializePayload()
+        {
+            SpineCmdPayloadBase.Class? cls = GetClass();
+            if (null == cls)
+                return null;
+
+             return cls.FromJsonNode(datagram.payload);
+        }
+        public async ValueTask EvaluateAsync( Connection connection )
+		{
+			SpineCmdPayloadBase.Class? cls = GetClass();
+			if ( null == cls )
+				return;
+
+			await cls.EvaluateAsync( connection, this.datagram );
+		}
+
+		/// <summary>
+		/// One-line, human-readable summary of this decoded SPINE datagram (cmdClassifier, function,
+		/// counters, addresses) for the "EEBUS.Spine" application-level logger - deliberately separate
+		/// from the raw SHIP frame bytes already traced at "EEBUS.Ship", see <see cref="Connection"/>.
+		/// </summary>
+		public string DescribeForLog()
+		{
+			string function = "?";
+			if (this.datagram.payload is JsonObject payloadObj
+				&& payloadObj.TryGetPropertyValue("cmd", out JsonNode? cmdsNode)
+				&& cmdsNode is JsonArray cmdsArray && cmdsArray.Count > 0
+				&& cmdsArray[0] is JsonObject cmdObj)
+			{
+				var prop = cmdObj.FirstOrDefault();
+				if (!prop.Equals(default(KeyValuePair<string, JsonNode?>)))
+				{
+					function = prop.Key;
+					if (function == "function" && prop.Value is JsonValue v && v.TryGetValue<string>(out var fn))
+						function = fn;
+				}
+			}
+
+			static string FormatAddress(AddressType? a) =>
+				a == null ? "?" : $"{a.device}/{string.Join('.', a.entity)}/{(a.feature?.ToString() ?? "?")}";
+
+			string reference = this.datagram.header.msgCounterReference is { } r ? $" ref={r}" : "";
+			return $"{this.datagram.header.cmdClassifier ?? "?"} {function} " +
+				$"counter={this.datagram.header.msgCounter}{reference} " +
+				$"{FormatAddress(this.datagram.header.addressSource)} -> {FormatAddress(this.datagram.header.addressDestination)}";
+		}
+	}
+
+	[System.SerializableAttribute()]
+	public class DatagramType
+	{
+		public HeaderType header  { get; set; } = new();
+
+		public JsonNode? payload { get; set; }
+
+		/// <summary>
+		/// Context for passing approval result from Evaluate to CreateAnswer.
+		/// Not serialized - internal use only.
+		/// </summary>
+		[JsonIgnore]
+		public WriteApprovalResult ApprovalResult { get; set; }
+	}
+
+	[System.SerializableAttribute()]
+	public class HeaderType
+	{
+		public string	   specificationVersion { get; set; } = "1.3.0";
+
+		public AddressType addressSource		{ get; set; }
+
+		public AddressType addressDestination	{ get; set; }
+
+		public ulong	   msgCounter			{ get; set; }
+
+		[JsonPropertyName("msgCounterReference")]
+		public ulong?	   msgCounterReference	{ get; set; }
+
+		public string	   cmdClassifier		{ get; set; }
+
+		[JsonPropertyName("ackRequest")]
+		public bool?	   ackRequest			{ get; set; }
+	}
+
+	[System.SerializableAttribute()]
+	public class AddressType
+	{
+		[JsonPropertyName("device")]
+		public string? device  { get; set; }
+
+		public int[] entity { get; set; } = Array.Empty<int>();
+
+		[JsonPropertyName("feature")]
+		public int?	  feature { get; set; }
+
+        public override bool Equals(object? obj)
+        {
+			if (obj is not AddressType other) return false;
+
+			return this.device == other.device && this.entity.SequenceEqual(other.entity) && this.feature == other.feature;
+        }
+
+        public override int GetHashCode()
+        {
+			HashCode hashCode = new HashCode();
+			hashCode.Add(this.device);
+			foreach (int entityAddressPart in this.entity)
+			{
+				hashCode.Add(entityAddressPart);
+			}
+			hashCode.Add(this.feature);
+			return hashCode.ToHashCode();
+        }
+
+        public static bool operator ==(AddressType? lhs, AddressType? rhs)
+        {
+            if (lhs is null)
+            {
+                if (rhs is null)
+                {
+                    return true;
+                }
+
+                // Only the left side is null.
+                return false;
+            }
+            // Equals handles case of null on right side.
+            return lhs.Equals(rhs);
+        }
+
+        public static bool operator !=(AddressType? lhs, AddressType? rhs) => !(lhs == rhs);
+    }
+}

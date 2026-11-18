@@ -1,0 +1,96 @@
+﻿
+using EEBUS.Messages;
+using EEBUS.Models;
+using EEBUS.Net;
+using System.Text.Json;
+
+namespace EEBUS.SPINE.Commands
+{
+	public class NodeManagementUseCaseData : SpineCmdPayload<CmdNodeManagementUseCaseDataType>
+	{
+		static NodeManagementUseCaseData()
+		{
+			Register( "nodeManagementUseCaseData", new Class() );
+		}
+
+		public new class Class : SpineCmdPayload<CmdNodeManagementUseCaseDataType>.Class
+		{
+			public override async ValueTask<SpineCmdPayloadBase?> CreateAnswerAsync( DatagramType datagram, HeaderType header, Connection connection )
+			{
+                if (datagram.header.cmdClassifier != "read")
+                    return null;
+
+                NodeManagementUseCaseData	  payload = new NodeManagementUseCaseData();
+				NodeManagementUseCaseDataType data	  = payload.cmd[0].nodeManagementUseCaseData;
+
+				List<UseCaseInformationType> infos = new();
+
+				foreach ( Entity entity in connection.Local.Entities )
+					infos.AddRange( entity.UseCaseInformations );
+
+				data.useCaseInformation = infos.ToArray();
+
+				return payload;
+			}
+
+            public override async ValueTask EvaluateAsync(Connection connection, DatagramType datagram)
+            {
+                if (datagram.header.cmdClassifier != "reply")
+                    return;
+
+				NodeManagementUseCaseData? payload = datagram.payload == null ? null : JsonHelper.FromJsonNode<NodeManagementUseCaseData>(datagram.payload);
+
+				if (payload != null && connection.Remote != null)
+				{
+					connection.Remote.SetUseCaseData(payload);
+                    connection.ConnectionStatus = Net.DeviceConnectionStatus.UseCaseDiscoveryCompleted;
+                    await SendConnectionStatusUpdatedEvent(connection);
+                }
+				return;
+            }
+
+            public override SpineCmdPayloadBase? CreateRead(Connection connection)
+            {
+				return new NodeManagementUseCaseData();
+            }
+		}
+	}
+
+	[System.SerializableAttribute()]
+	public class CmdNodeManagementUseCaseDataType : CmdType
+	{
+		public NodeManagementUseCaseDataType nodeManagementUseCaseData { get; set; } = new();
+	}
+
+	[System.SerializableAttribute()]
+	public class NodeManagementUseCaseDataType
+	{
+		//this needs to be nullable, because for some reason if we send a read request to a remote device
+		//with useCaseInformation filled, we do not get an answer
+		public UseCaseInformationType[]? useCaseInformation { get; set; }
+	}
+
+	[System.SerializableAttribute()]
+	public class UseCaseInformationType
+	{
+		public AddressType			address		   { get; set; } = new();
+
+		public string				actor		   { get; set; }
+
+		public UseCaseSupportType[]	useCaseSupport { get; set; } = [new()];
+	}
+
+	[System.SerializableAttribute()]
+	public class UseCaseSupportType
+	{
+		public string useCaseName				 { get; set; }
+
+		public string useCaseVersion			 { get; set; }
+
+		public bool	  useCaseAvailable			 { get; set; }
+
+		public uint[] scenarioSupport			 { get; set; }
+
+		public string useCaseDocumentSubRevision { get; set; }
+	}
+}

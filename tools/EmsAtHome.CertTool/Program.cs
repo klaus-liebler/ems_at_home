@@ -9,7 +9,14 @@ using System.Security.Cryptography.X509Certificates;
 // for the full investigation. A named CngKey survives PFX export/re-import (verified), so
 // EEBUS.Net's own unmodified certificate-loading code works fine once the PFX is built this way.
 
-const string KeyName = "ems-at-home-eebus";
+// Bumped 2026-08-31 (again): after the real bug (duplicate MonitoringOfPowerConsumption
+// registration, see EebusOptions.cs) was found and fixed, the "-3" identity's SKI still would not
+// reach UseCaseDiscoveryCompleted even when re-paired with the corrected declaration - a from-
+// scratch identity worked immediately with the identical corrected declaration. Whatever state
+// the "-3" SKI accumulated across dozens of pairing cycles during that day's debugging apparently
+// isn't fully cleared by unpair+re-pair (nor by a wallbox factory reset) - a fresh key/SKI sidesteps
+// it rather than diagnosing the wallbox's internal state further.
+const string KeyName = "ems-at-home-eebus-5";
 const string PfxPassword = "xcenter"; // hardcoded by EEBUS.Net's CertificateGenerator, not our choice
 
 if (args.Length < 1 || args[0] != "generate")

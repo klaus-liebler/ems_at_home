@@ -2,7 +2,11 @@
   <Folder Name="/src/">
     <Project Path="src/EmsAtHome.Abstractions/EmsAtHome.Abstractions.csproj" />
     <Project Path="src/EmsAtHome.Eebus/EmsAtHome.Eebus.csproj" />
+    <Project Path="src/EmsAtHome.EebusCli/EmsAtHome.EebusCli.csproj" />
     <Project Path="src/EmsAtHome.Host/EmsAtHome.Host.csproj" />
+  </Folder>
+  <Folder Name="/src/vendor/">
+    <Project Path="src/vendor/EEBUS.Net/EEBUS.Net.csproj" />
   </Folder>
   <Folder Name="/test/">
     <Project Path="test/EmsAtHome.Eebus.Tests/EmsAtHome.Eebus.Tests.csproj" />
